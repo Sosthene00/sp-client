@@ -4,7 +4,7 @@ use anyhow::{Error, Result};
 use bitcoin::{
     secp256k1::{PublicKey, Scalar, Secp256k1},
     util::bip158::BlockFilter,
-    Block, BlockHash, Script, Transaction, TxOut, XOnlyPublicKey,
+    Block, BlockHash, Script, Transaction, TxOut, XOnlyPublicKey, OutPoint,
 };
 use electrum_client::ElectrumApi;
 use lazy_static::lazy_static;
@@ -17,8 +17,8 @@ use once_cell::sync::OnceCell;
 use silentpayments::receiving::Receiver;
 
 use crate::{
-    constants::ScanProgress,
-    db::{self, insert_outpoint, update_scan_height},
+    constants::{ScanProgress, OwnedOutput},
+    wallet::Wallet,
     stream::{loginfo, send_amount_update, send_scan_progress},
 };
 
@@ -69,11 +69,13 @@ pub fn get_peer_count() -> Result<u32> {
 
 pub fn scan_blocks(
     mut n_blocks_to_scan: u32,
-    sp_receiver: &Receiver,
+    wallet: &mut Wallet,
     electrum_client: electrum_client::Client,
     scan_key_scalar: Scalar,
 ) -> anyhow::Result<()> {
     let handle = get_global_handle();
+
+    let sp_receiver = wallet.sp_wallet.clone();
 
     loginfo("scanning blocks");
 
@@ -81,7 +83,7 @@ pub fn scan_blocks(
     let filterchannel = handle.filters();
     let blkchannel = handle.blocks();
 
-    let scan_height = db::get_scan_height()?;
+    let scan_height = wallet.scan_status.scan_height;
     let tip_height = handle.get_tip()?.0 as u32;
 
     // 0 means scan to tip
@@ -99,7 +101,7 @@ pub fn scan_blocks(
     };
 
     if start > end {
-        return Ok(());
+        return Err(Error::msg("Start height can't be higher than end"));
     }
 
     loginfo(format!("start: {} end: {}", start, end).as_str());
@@ -138,14 +140,15 @@ pub fn scan_blocks(
             if found {
                 handle.request_block(&blkhash)?;
                 let (blk, _) = blkchannel.recv().unwrap();
-                let res = scan_block(&sp_receiver, blk, map);
+                let res = scan_block(&sp_receiver, blk, blkheight, map);
 
                 loginfo(format!("outputs found:{:?}", res).as_str());
 
                 for r in res {
-                    insert_outpoint(blkheight, r.0, r.1)?;
+                    // insert_outpoint(blkheight, r.0, r.1)?;
+                    wallet.insert_outpoint(r)
                 }
-                let amount = db::get_sum_owned()?;
+                let amount = wallet.get_sum_owned();
                 send_amount_update(amount);
                 send_scan_progress(ScanProgress {
                     start,
@@ -159,7 +162,7 @@ pub fn scan_blocks(
             // println!("no tweak data for this block");
         }
     }
-    update_scan_height(end).unwrap();
+    wallet.update_scan_height(end);
     Ok(())
 }
 
@@ -192,9 +195,10 @@ pub fn restart_nakamoto_client() -> Result<()> {
 fn scan_block(
     sp_receiver: &Receiver,
     block: Block,
+    blockheight: u64,
     mut map: HashMap<Script, PublicKey>,
-) -> Vec<(u64, Script)> {
-    let mut res: Vec<(u64, Script)> = vec![];
+) -> Vec<OwnedOutput> {
+    let mut res: Vec<OwnedOutput> = vec![];
 
     for (_, tx) in block.txdata.into_iter().enumerate() {
         if !is_eligible_sp_transaction(&tx) {
@@ -206,19 +210,24 @@ fn scan_block(
         let mut outputs_map = get_tx_with_outpoints(&tx.output);
 
         if let (Some(tweak_data), scripts) =
-            get_tx_taproot_scripts_and_tweak_data(tx.output, &mut map)
+            get_tx_taproot_scripts_and_tweak_data(&tx.output, &mut map)
         {
             let xonlypubkeys = get_xonly_pubkeys_from_scripts(scripts);
             let outputs = sp_receiver
                 .scan_transaction(&tweak_data, xonlypubkeys)
                 .unwrap();
             for (output, _) in outputs {
-                let txout = outputs_map.remove(&output).unwrap();
+                let (txout, index) = outputs_map.remove(&output).unwrap();
 
-                let amt = txout.value;
-                let script = txout.script_pubkey;
-
-                res.push((amt, script));
+                res.push(OwnedOutput {
+                    txoutpoint: OutPoint::new(tx.txid(), index),
+                    tweak_data,
+                    index: 0, // how do we get this?
+                    blockheight,
+                    amount: txout.value,
+                    script: txout.script_pubkey,
+                    status: crate::constants::Status::Unspent
+                });
             }
         }
     }
@@ -245,22 +254,22 @@ fn get_xonly_pubkeys_from_scripts(scripts: Vec<Script>) -> Vec<XOnlyPublicKey> {
 }
 
 fn get_tx_taproot_scripts_and_tweak_data(
-    txout: Vec<TxOut>,
+    txout: &Vec<TxOut>,
     map: &mut HashMap<Script, PublicKey>,
 ) -> (Option<PublicKey>, Vec<Script>) {
     let mut tweak_data = None;
     let outputs: Vec<Script> = txout
-        .into_iter()
+        .iter()
         .filter_map(|x| {
-            let script = x.script_pubkey;
+            let script = &x.script_pubkey;
 
-            if let Some(found_tweak_data) = map.remove(&script) {
+            if let Some(found_tweak_data) = map.remove(script) {
                 // this indicates we have found a tx with tweak data that we are looking for
                 // in the minimal case, this output belongs to us, but there may be more
                 tweak_data = Some(found_tweak_data);
-                Some(script)
+                Some(script.to_owned())
             } else if script.is_v1_p2tr() {
-                Some(script)
+                Some(script.to_owned())
             } else {
                 None
             }
@@ -289,15 +298,13 @@ fn calculate_script_pubkeys(
     res
 }
 
-fn get_tx_with_outpoints(txout: &Vec<TxOut>) -> HashMap<XOnlyPublicKey, TxOut> {
+fn get_tx_with_outpoints(txout: &Vec<TxOut>) -> HashMap<XOnlyPublicKey, (TxOut, u32)> {
     let mut res = HashMap::new();
 
-    for x in txout {
-        let script = &x.script_pubkey;
-        if script.is_v1_p2tr() {
-            let output = script.clone().into_bytes();
-            let pk = XOnlyPublicKey::from_slice(&output[2..]).unwrap();
-            res.insert(pk, x.clone());
+    for (i, o) in txout.iter().enumerate() {
+        if o.script_pubkey.is_v1_p2tr() {
+            let pk = XOnlyPublicKey::from_slice(&o.script_pubkey.as_bytes()[2..]).unwrap();
+            res.insert(pk, (o.clone(), i as u32));
         }
     }
     res

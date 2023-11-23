@@ -1,7 +1,5 @@
-use bitcoin::Script;
-use serde::Serialize;
-use turbosql::Turbosql;
-
+use serde::{Serialize, Deserialize};
+use bitcoin::{secp256k1::PublicKey, OutPoint, Script, Txid};
 
 pub struct LogEntry {
     // pub time_millis: i64,
@@ -10,8 +8,8 @@ pub struct LogEntry {
     pub msg: String,
 }
 
-pub struct WalletStatus {
-    pub amount: u32,
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct ScanStatus {
     pub scan_height: u32,
     pub block_tip: u32,
 }
@@ -22,16 +20,19 @@ pub struct ScanProgress {
     pub end: u32,
 }
 
-#[derive(Turbosql, Default, Debug, Serialize)]
-pub struct OwnedOutputs {
-    pub rowid: Option<i64>,
-    pub blockheight: Option<u32>,
-    pub amount: Option<u32>,
-    pub script: Option<Script>,
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
+pub(crate) enum Status {
+    Unspent,
+    Spent(Txid)
 }
 
-#[derive(Turbosql, Default, Debug, Serialize)]
-pub struct ScanHeight {
-    pub rowid: Option<i64>,
-    pub scanheight: Option<u32>,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OwnedOutput {
+    pub txoutpoint: OutPoint, 
+    pub tweak_data: PublicKey,
+    pub index: u32,
+    pub blockheight: u64,
+    pub amount: u64,
+    pub script: Script,
+    pub status: Status,
 }

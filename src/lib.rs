@@ -1,8 +1,8 @@
 pub mod api;
 mod bridge_generated;
 mod nakamotoclient;
-mod db;
+mod wallet;
 mod constants;
 mod electrumclient;
-mod spclient;
+// mod spclient;
 mod stream;
