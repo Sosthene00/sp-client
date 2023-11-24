@@ -12,7 +12,6 @@ use crate::constants::{OwnedOutput, ScanStatus, Status};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Wallet {
     pub sp_wallet: Receiver,
-    pub birthday: u32,
     pub scan_status: ScanStatus,
     pub total_amt: u64,
     outputs: Vec<OwnedOutput>
@@ -20,17 +19,12 @@ pub struct Wallet {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct WalletMessage {
+    pub label: String,
     pub mnemonic: String,
     pub wallet: Wallet,
-    pub label: String,
 }
 
 impl Wallet {
-    fn add_receiver(&mut self, receiver: Receiver) {
-        // Check that we don't have a legit receiver here
-        self.sp_wallet = receiver;
-    }
-
     pub fn update_scan_height(&mut self, new: u32) {
         self.scan_status.scan_height = new;
     }
@@ -84,24 +78,14 @@ impl Wallet {
     }
 }
 
-pub fn setup(label: String, words: Option<String>, mut birthday: u32, network: String) -> Result<String> {
+pub fn setup(label: String, network: String) -> Result<String> {
+    let network = Network::from_str(&network)?;
     let mut seed = [0u8;64];
 
-    let mut entropy = [0u8;33];
-    // Create the empty wallet
-    if let Some(m_words) = words {
-        let mnemonic = Mnemonic::from_str(&m_words).expect("Invalid mnemonic");
-        entropy.copy_from_slice(&mnemonic.to_entropy());
-        seed.copy_from_slice(&mnemonic.to_seed(""));
-    } else {
-        // Create a new wallet
-        let mnemonic = Mnemonic::generate(12).expect("Failed to generate mnemonics");
-        entropy.copy_from_slice(&mnemonic.to_entropy());
-        seed.copy_from_slice(&mnemonic.to_seed(""));
-    }
+    let mnemonic = Mnemonic::generate(12).expect("Failed to generate mnemonics");
+    seed.copy_from_slice(&mnemonic.to_seed(""));
 
     let secp = Secp256k1::new();
-    let network = Network::from_str(&network)?;
     let master_key = ExtendedPrivKey::new_master(network, &seed).unwrap();
     let coin_type_derivation = if network == Network::Bitcoin { "0'" } else { "1'" };
 
@@ -115,17 +99,17 @@ pub fn setup(label: String, words: Option<String>, mut birthday: u32, network: S
 
     let wallet = Wallet {
         sp_wallet: receiver,
-        birthday,
         scan_status: ScanStatus::default(),
         total_amt: u64::default(),
         outputs: vec![]
     };
 
     // Serialize it to JSON
-    let json = serde_json::to_string(&WalletMessage {
-        mnemonic: Mnemonic::from_entropy(&entropy).unwrap().to_string(),
+    let json = serde_json::to_string( &WalletMessage {
+        label,
+        // below that we must encrypt
+        mnemonic: mnemonic.to_string(),
         wallet,
-        label
     })?;
 
     Ok(json)

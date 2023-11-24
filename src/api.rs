@@ -9,7 +9,6 @@ use crate::{
     wallet::{self, WalletMessage},
     electrumclient::create_electrum_client,
     nakamotoclient,
-    // spclient::{self, get_sp_client},
     stream::{self, loginfo},
 };
 
@@ -23,8 +22,8 @@ pub fn create_scan_progress_stream(s: StreamSink<ScanProgress>) {
     stream::create_scan_progress_stream(s);
 }
 
-pub fn setup(label: String, mnemonic: Option<String>, birthday: u32, network: String) -> String {
-    let wallet_data = wallet::setup(label.clone(), mnemonic, birthday, network).unwrap();
+pub fn setup(label: String, network: String) -> String {
+    let wallet_data = wallet::setup(label.clone(), network).unwrap();
     loginfo("wallet has been setup");
 
     nakamotoclient::setup(label).unwrap();
@@ -33,12 +32,6 @@ pub fn setup(label: String, mnemonic: Option<String>, birthday: u32, network: St
     wallet_data
 }
 
-
-// pub fn reset_wallet() {
-//     let birthday = spclient::get_birthday().unwrap();
-//     wallet::reset_scan_height(birthday).unwrap();
-//     wallet::drop_owned_outpoints().unwrap();
-// }
 
 pub fn start_nakamoto() {
     nakamotoclient::start_nakamoto_client().unwrap();
@@ -87,13 +80,6 @@ pub fn get_wallet_info(blob: String) -> ScanStatus {
         scan_height,
         block_tip: tip_height,
     }
-}
-
-pub fn get_birthday(blob: String) -> u32 {
-    let wallet_msg: WalletMessage = serde_json::from_str(&blob).unwrap();
-
-    let wallet = wallet_msg.wallet;
-    wallet.birthday
 }
 
 pub fn get_wallet_balance(blob: String) -> u64 {
