@@ -34,7 +34,7 @@ pub fn setup(path: String) -> anyhow::Result<()> {
     cfg.root = PathBuf::from(format!("{}/db", path));
     loginfo(format!("cfg.root = {:?}", cfg.root).as_str());
 
-    NAKAMOTO_CONFIG.set(cfg).unwrap();
+    let _ = NAKAMOTO_CONFIG.set(cfg);
     Ok(())
 }
 
