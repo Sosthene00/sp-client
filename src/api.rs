@@ -22,8 +22,8 @@ pub fn create_scan_progress_stream(s: StreamSink<ScanProgress>) {
     stream::create_scan_progress_stream(s);
 }
 
-pub fn setup(label: String, network: String) -> String {
-    let wallet_data = wallet::setup(label.clone(), network).unwrap();
+pub fn setup(label: String, network: String, seed_words: Option<String>) -> String {
+    let wallet_data = wallet::setup(label.clone(), network, seed_words).unwrap();
     loginfo("wallet has been setup");
 
     nakamotoclient::setup(label).unwrap();
