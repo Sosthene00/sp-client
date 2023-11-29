@@ -78,15 +78,15 @@ impl Wallet {
     }
 }
 
-pub fn setup(label: String, network: String) -> Result<String> {
+pub fn setup(label: String, network: String, seed_words: Option<String>) -> Result<String> {
     let network = Network::from_str(&network)?;
-    let mut seed = [0u8;64];
 
-    let mnemonic = Mnemonic::generate(12).expect("Failed to generate mnemonics");
-    seed.copy_from_slice(&mnemonic.to_seed(""));
+    let mnemonic = if let Some(words) = seed_words { Mnemonic::from_str(&words).unwrap() }
+    else { Mnemonic::generate(12).unwrap() }; 
+    let seed = &mnemonic.to_seed("");
 
     let secp = Secp256k1::new();
-    let master_key = ExtendedPrivKey::new_master(network, &seed).unwrap();
+    let master_key = ExtendedPrivKey::new_master(network, seed).unwrap();
     let coin_type_derivation = if network == Network::Bitcoin { "0'" } else { "1'" };
 
     let scan_key_path = DerivationPath::from_str(&format!("m/352'/{}/0'/1'/0", coin_type_derivation))?;
