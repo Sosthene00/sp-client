@@ -31,6 +31,7 @@ pub struct OwnedOutput {
     pub txoutpoint: OutPoint, 
     pub tweak_data: PublicKey,
     pub index: u32,
+    pub tweak: [u8;32],
     pub blockheight: u64,
     pub amount: u64,
     pub script: Script,

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, net, path::PathBuf, str::FromStr, sync::Mutex};
+use std::{collections::HashMap, net, path::PathBuf, str::FromStr, sync::{Mutex, Arc}, thread};
 
 use anyhow::{Error, Result};
 use bitcoin::{
@@ -23,8 +23,9 @@ use crate::{
 };
 
 lazy_static! {
-    static ref HANDLE: Mutex<Option<nakamoto::client::Handle<nakamoto::net::poll::Waker>>> =
-        Mutex::new(None);
+    static ref JOIN_HANDLE: Arc<Mutex<Option<thread::JoinHandle<()>>>> = Arc::new(Mutex::new(None));
+    static ref HANDLE: Arc<Mutex<Option<nakamoto::client::Handle<nakamoto::net::poll::Waker>>>> =
+        Arc::new(Mutex::new(None));
     static ref NAKAMOTO_CONFIG: OnceCell<Config> = OnceCell::new();
 }
 
@@ -38,31 +39,49 @@ pub fn setup(path: String) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn set_thread_handle(handle: thread::JoinHandle<()>) {
+    let mut global_handle = JOIN_HANDLE.lock().unwrap();
+    *global_handle = Some(handle);
+}
+
+fn stop_thread() -> Result<(), String> {
+    let mut global_handle = JOIN_HANDLE.lock()
+        .map_err(|_| "Mutex Error".to_owned())?;
+    if let Some(h) = global_handle.take() {
+        h.join().unwrap();
+        Ok(())
+    } else {
+        Err("No thread to stop".to_owned())
+    }
+}
 fn set_global_handle(handle: nakamoto::client::Handle<Waker>) {
     let mut global_handle = HANDLE.lock().unwrap();
     *global_handle = Some(handle);
 }
 
-fn get_global_handle() -> nakamoto::client::Handle<Waker> {
-    let global_handle = HANDLE.lock().unwrap().clone();
-    global_handle.unwrap()
+fn get_global_handle() -> Result<nakamoto::client::Handle<Waker>, String> {
+    let global_handle = HANDLE.lock()
+        .map_err(|_| "Mutex Error".to_owned())?.clone();
+    match global_handle.is_some() {
+        true => Ok(global_handle.unwrap()),
+        false => Err("No handle in the lock".to_owned())
+    }
 }
 
-pub fn get_tip() -> Result<u32> {
-    let handle = get_global_handle();
+pub fn get_tip() -> Result<u32, String> {
+    let handle = get_global_handle()?;
 
-    let res = handle.get_tip().unwrap();
-    loginfo(format!("tip {}", res.0).as_str());
+    let res = handle.get_tip()
+        .map_err(|e| e.to_string())?;
 
     Ok(res.0 as u32)
 }
 
-pub fn get_peer_count() -> Result<u32> {
-    let handle = get_global_handle();
+pub fn get_peer_count() -> Result<u32, String> {
+    let handle = get_global_handle()?;
 
-    let res = handle.get_peers(Services::default())?;
-
-    loginfo(format!("peers {}", res.len()).as_str());
+    let res = handle.get_peers(Services::default())
+        .map_err(|e| e.to_string())?;
 
     Ok(res.len() as u32)
 }
@@ -72,8 +91,8 @@ pub fn scan_blocks(
     wallet: &mut Wallet,
     electrum_client: electrum_client::Client,
     scan_key_scalar: Scalar,
-) -> anyhow::Result<()> {
-    let handle = get_global_handle();
+) -> anyhow::Result<(), String> {
+    let handle = get_global_handle()?;
 
     let sp_receiver = wallet.sp_wallet.clone();
 
@@ -84,7 +103,8 @@ pub fn scan_blocks(
     let blkchannel = handle.blocks();
 
     let scan_height = wallet.scan_status.scan_height;
-    let tip_height = handle.get_tip()?.0 as u32;
+    let tip_height = handle.get_tip()
+        .map_err(|e| e.to_string())?.0 as u32;
 
     // 0 means scan to tip
     if n_blocks_to_scan == 0 {
@@ -101,13 +121,15 @@ pub fn scan_blocks(
     };
 
     if start > end {
-        return Err(Error::msg("Start height can't be higher than end"));
+        return Err("Start height can't be higher than end".to_owned());
     }
 
     loginfo(format!("start: {} end: {}", start, end).as_str());
-    handle.request_filters(start as u64..=end as u64)?;
+    handle.request_filters(start as u64..=end as u64)
+        .map_err(|e| e.to_string())?;
 
-    let mut tweak_data_map = electrum_client.sp_tweaks(start as usize)?;
+    let mut tweak_data_map = electrum_client.sp_tweaks(start as usize)
+        .map_err(|e| e.to_string())?;
 
     for n in start..=end {
         if n % 10 == 0 || n == end {
@@ -118,7 +140,8 @@ pub fn scan_blocks(
             });
         }
 
-        let (blkfilter, blkhash, blkheight) = filterchannel.recv()?;
+        let (blkfilter, blkhash, blkheight) = filterchannel.recv()
+            .map_err(|e| e.to_string())?;
 
         let tweak_data_vec = tweak_data_map.remove(&(blkheight as u32));
         if let Some(tweak_data_vec) = tweak_data_vec {
@@ -126,26 +149,31 @@ pub fn scan_blocks(
                 .into_iter()
                 .map(|x| PublicKey::from_str(&x).map_err(|x| Error::new(x)))
                 .collect();
-            let shared_secret_vec: Result<Vec<PublicKey>> = tweak_data_vec?
+            let shared_secret_vec: Result<Vec<PublicKey>> = tweak_data_vec
+                .map_err(|e| e.to_string())?
                 .into_iter()
                 .map(|x| {
                     x.mul_tweak(&secp, &scan_key_scalar)
                         .map_err(|x| Error::new(x))
                 })
                 .collect();
-            let map = calculate_script_pubkeys(shared_secret_vec?, &sp_receiver);
+            let map = calculate_script_pubkeys(
+                shared_secret_vec
+                .map_err(|e| e.to_string())?, 
+                &sp_receiver
+            );
 
             let found =
                 search_filter_for_script_pubkeys(map.keys().cloned().collect(), blkfilter, blkhash);
             if found {
-                handle.request_block(&blkhash)?;
+                handle.request_block(&blkhash)
+                    .map_err(|e| e.to_string())?;
                 let (blk, _) = blkchannel.recv().unwrap();
                 let res = scan_block(&sp_receiver, blk, blkheight, map);
 
                 loginfo(format!("outputs found:{:?}", res).as_str());
 
                 for r in res {
-                    // insert_outpoint(blkheight, r.0, r.1)?;
                     wallet.insert_outpoint(r)
                 }
                 let amount = wallet.get_sum_owned();
@@ -166,28 +194,56 @@ pub fn scan_blocks(
     Ok(())
 }
 
-pub fn start_nakamoto_client() -> anyhow::Result<()> {
+pub fn start_nakamoto_client() -> anyhow::Result<(), String> {
     let cfg = NAKAMOTO_CONFIG.wait().clone();
 
     // Create a client using the above network reactor.
     type Reactor = nakamoto::net::poll::Reactor<net::TcpStream>;
-    let client = Client::<Reactor>::new()?;
+    let client = Client::<Reactor>::new()
+        .map_err(|e| format!("Failed to create nakamoto client: {}", e.to_string()))?;
     let handle = client.handle();
 
     set_global_handle(handle);
 
-    loginfo("handle set");
-    client.run(cfg).unwrap();
+    let t = thread::spawn(|| {
+        let res = client.run(cfg)
+            .map_err(|e| format!("Nakamoto client failed with error: {}", e.to_string()));
+        match res {
+            Ok(()) => return,
+            Err(e) => loginfo(&e),
+        }
+    });
+
+    set_thread_handle(t);
+
     Ok(())
 }
 
-pub fn restart_nakamoto_client() -> Result<()> {
+pub fn stop_nakamoto_client() -> Result<(), String> {
     let handle = get_global_handle();
 
-    handle.shutdown()?;
+    match handle {
+        Ok(_) => loginfo("Got handle"),
+        Err(_) => {
+            return Err("Failed to get a handle".to_owned());
+        }
+    }
 
-    loginfo("shutdown completed, restarting");
+    let shutdown = handle.unwrap().shutdown();
+    match shutdown {
+        Ok(_) => loginfo("Successfully shutdown"),
+        Err(e) => {
+            return Err(format!("Failed to shutdown with error {}", e.to_string())); 
+        }
+    }
 
+    stop_thread()?;
+    Ok(())
+}
+
+pub fn restart_nakamoto_client() -> Result<(), String> {
+    stop_nakamoto_client()?;
+    loginfo("Succesfully shutdown Nakamoto, starting again...");
     start_nakamoto_client()
 }
 
@@ -216,13 +272,14 @@ fn scan_block(
             let outputs = sp_receiver
                 .scan_transaction(&tweak_data, xonlypubkeys)
                 .unwrap();
-            for (output, _) in outputs {
+            for (output, scalar) in outputs {
                 let (txout, index) = outputs_map.remove(&output).unwrap();
 
                 res.push(OwnedOutput {
                     txoutpoint: OutPoint::new(tx.txid(), index),
                     tweak_data,
                     index: 0, // how do we get this?
+                    tweak: scalar.to_be_bytes(),
                     blockheight,
                     amount: txout.value,
                     script: txout.script_pubkey,

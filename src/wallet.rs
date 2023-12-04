@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::str::FromStr;
 
 use anyhow::{Error, Result};
@@ -6,8 +5,39 @@ use bip39::Mnemonic;
 use bitcoin::{secp256k1::Secp256k1, OutPoint, Txid, util::bip32::{ExtendedPrivKey, DerivationPath}, Network};
 use serde::{Serialize, Deserialize};
 use silentpayments::receiving::Receiver;
+use chrono::{DateTime, Utc};
 
 use crate::constants::{OwnedOutput, ScanStatus, Status};
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct WalletMessage {
+    pub label: String,
+    pub timestamp: String,
+    // below this is encrypted stuff
+    pub mnemonic: String,
+    pub wallet: Wallet,
+}
+
+impl WalletMessage {
+    pub(crate) fn new(label: String, mnemonic: String, wallet: Wallet) -> Self {
+        let current_time: DateTime<Utc> = Utc::now();
+        
+        WalletMessage { 
+            label, 
+            timestamp: format!("{}", current_time.format("%Y/%m/%d %H:%M")),
+            mnemonic,
+            wallet
+        }
+    }
+
+    pub(crate) fn to_json(&self) -> Result<String> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    pub(crate) fn from_json(blob: String) -> Result<WalletMessage> {
+        Ok(serde_json::from_str(&blob)?)
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Wallet {
@@ -15,13 +45,6 @@ pub struct Wallet {
     pub scan_status: ScanStatus,
     pub total_amt: u64,
     outputs: Vec<OwnedOutput>
-}
-
-#[derive(Serialize, Deserialize)]
-pub(crate) struct WalletMessage {
-    pub label: String,
-    pub mnemonic: String,
-    pub wallet: Wallet,
 }
 
 impl Wallet {
@@ -104,23 +127,15 @@ pub fn setup(label: String, network: String, seed_words: Option<String>) -> Resu
         outputs: vec![]
     };
 
-    // Serialize it to JSON
-    let json = serde_json::to_string( &WalletMessage {
-        label,
-        // below that we must encrypt
-        mnemonic: mnemonic.to_string(),
-        wallet,
-    })?;
-
-    Ok(json)
+    Ok(WalletMessage::new(label, mnemonic.to_string(), wallet).to_json()?)
 }
 
-pub fn drop_owned_outpoints() -> Result<()> {
+// pub fn drop_owned_outpoints() -> Result<()> {
 
-    Ok(())
-}
+//     Ok(())
+// }
 
-pub fn reset_owned_outputs_from_block_height(height: u32) -> Result<()> {
+// pub fn reset_owned_outputs_from_block_height(height: u32) -> Result<()> {
 
-    Ok(())
-}
+//     Ok(())
+// }
