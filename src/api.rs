@@ -132,3 +132,20 @@ pub fn set_wallet_birthday(blob: String, new_birthday: u32) -> Result<String, St
 
     Ok(wallet_msg.to_json().map_err(|e| e.to_string())?)
 }
+
+pub fn get_spendable_outputs(blob: String) -> Result<Vec<String>, String> {
+    let wallet_msg = WalletMessage::from_json(blob)
+        .map_err(|e| e.to_string())?;
+
+    Ok(wallet_msg.wallet.list_outpoints().iter()
+        .filter(|o| {
+            o.status == Status::Unspent
+        })
+        .map(|o| {
+            let str = serde_json::to_string(o).unwrap();
+            loginfo(&format!("{}", str));
+            str
+        })
+        .collect()
+    )
+}
