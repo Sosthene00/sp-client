@@ -5,7 +5,7 @@ use bitcoin::{secp256k1::{Scalar, Secp256k1}, util::bip32::{DerivationPath, Exte
 use flutter_rust_bridge::StreamSink;
 
 use crate::{
-    constants::{LogEntry, ScanProgress, ScanStatus, Status},
+    constants::{LogEntry, ScanProgress, Status},
     wallet::{self, WalletMessage},
     electrumclient::create_electrum_client,
     nakamotoclient,
@@ -22,34 +22,32 @@ pub fn create_scan_progress_stream(s: StreamSink<ScanProgress>) {
     stream::create_scan_progress_stream(s);
 }
 
-pub fn setup(label: String, network: String, seed_words: Option<String>) -> String {
-    let wallet_data = wallet::setup(label.clone(), network, seed_words).unwrap();
+pub fn setup(label: String, network: String, seed_words: Option<String>) -> Result<String, String> {
+    let wallet_data = wallet::setup(label.clone(), network, seed_words)
+        .map_err(|e| e.to_string())?;
     loginfo("wallet has been setup");
 
-    nakamotoclient::setup(label).unwrap();
+    nakamotoclient::setup(label)
+        .map_err(|e| e.to_string())?;
     loginfo("nakamoto config has been setup");
 
-    wallet_data
+    Ok(wallet_data)
 }
 
 pub fn start_nakamoto() -> Result<(), String> {
     nakamotoclient::start_nakamoto_client()
-        .map_err(|e| e.to_string())
 }
 
 pub fn stop_nakamoto() -> Result<(), String> {
     nakamotoclient::stop_nakamoto_client()
-        .map_err(|e| e.to_string())
 }
 
 pub fn restart_nakamoto() -> Result<(), String> {
     nakamotoclient::restart_nakamoto_client()
-        .map_err(|e| e.to_string())
 }
 
 pub fn get_peer_count() -> Result<u32, String> {
     nakamotoclient::get_peer_count()
-        .map_err(|e| e.to_string())
 }
 
 pub fn get_tip() -> Result<u32, String> {

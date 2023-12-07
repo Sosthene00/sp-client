@@ -12,7 +12,8 @@ use crate::constants::{OwnedOutput, ScanStatus, Status};
 #[derive(Serialize, Deserialize)]
 pub(crate) struct WalletMessage {
     pub label: String,
-    pub timestamp: String,
+    pub timestamp: String, // when this state of the wallet was returned
+    pub scan_status: ScanStatus,
     // below this is encrypted stuff
     pub mnemonic: String,
     pub wallet: Wallet,
@@ -25,6 +26,7 @@ impl WalletMessage {
         WalletMessage { 
             label, 
             timestamp: format!("{}", current_time.format("%Y/%m/%d %H:%M")),
+            scan_status: ScanStatus::default(),
             mnemonic,
             wallet
         }
@@ -42,7 +44,6 @@ impl WalletMessage {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Wallet {
     pub sp_wallet: Receiver,
-    pub scan_status: ScanStatus,
     pub total_amt: u64,
     outputs: Vec<OwnedOutput>
 }
@@ -122,20 +123,9 @@ pub fn setup(label: String, network: String, seed_words: Option<String>) -> Resu
 
     let wallet = Wallet {
         sp_wallet: receiver,
-        scan_status: ScanStatus::default(),
         total_amt: u64::default(),
         outputs: vec![]
     };
 
     Ok(WalletMessage::new(label, mnemonic.to_string(), wallet).to_json()?)
 }
-
-// pub fn drop_owned_outpoints() -> Result<()> {
-
-//     Ok(())
-// }
-
-// pub fn reset_owned_outputs_from_block_height(height: u32) -> Result<()> {
-
-//     Ok(())
-// }
