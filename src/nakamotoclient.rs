@@ -39,9 +39,11 @@ pub fn setup(path: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn set_thread_handle(handle: thread::JoinHandle<()>) {
-    let mut global_handle = JOIN_HANDLE.lock().unwrap();
+fn set_thread_handle(handle: thread::JoinHandle<()>) -> Result<(), String> {
+    let mut global_handle = JOIN_HANDLE.lock()
+        .map_err(|e| e.to_string())?;
     *global_handle = Some(handle);
+    Ok(())
 }
 
 fn stop_thread() -> Result<(), String> {
@@ -64,14 +66,26 @@ fn get_global_handle() -> Result<nakamoto::client::Handle<Waker>, String> {
         .map_err(|_| "Mutex Error".to_owned())?.clone();
     match global_handle.is_some() {
         true => Ok(global_handle.unwrap()),
-        false => Err("No handle in the lock".to_owned())
+        false => Err("No handle in the lock, restarting Nakamoto...".to_owned())
     }
 }
 
 pub fn get_tip() -> Result<u32, String> {
-    let handle = get_global_handle()?;
+    let mut handle = get_global_handle();
+    match handle {
+        Err(_) => {
+            let stopped = stop_thread();
+            match stopped {
+                Err(e) => loginfo(&format!("{}", e)),
+                Ok(_) => {}
+            }
+            start_nakamoto_client()?;
+            handle = get_global_handle();
+        },
+        Ok(_) => {}
+    }
 
-    let res = handle.get_tip()
+    let res = handle.unwrap().get_tip()
         .map_err(|e| e.to_string())?;
 
     Ok(res.0 as u32)
@@ -206,7 +220,7 @@ pub fn start_nakamoto_client() -> anyhow::Result<(), String> {
         }
     });
 
-    set_thread_handle(t);
+    set_thread_handle(t)?;
 
     Ok(())
 }
