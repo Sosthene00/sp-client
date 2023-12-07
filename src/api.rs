@@ -55,7 +55,7 @@ pub fn get_tip() -> Result<u32, String> {
         .map_err(|e| e.to_string())
 }
 
-pub fn scan_next_n_blocks(blob: String, n: u32) -> Result<String, String> {
+pub fn scan_from(blob: String, height: u32) -> Result<String, String> {
     let mut wallet_msg = WalletMessage::from_json(blob)
         .map_err(|e| e.to_string())?; 
     let sp_receiver = &wallet_msg.wallet.sp_wallet;
@@ -85,31 +85,18 @@ pub fn scan_next_n_blocks(blob: String, n: u32) -> Result<String, String> {
 
     let scan_key_scalar: Scalar = scan_sk.into();
 
-    nakamotoclient::scan_blocks(n, &mut wallet_msg.wallet, electrum_client, scan_key_scalar)
-        .map_err(|e| e.to_string())?;
+    let tip = get_tip()?;
+
+    // for now we just scan to the tip
+    let to_scan = tip - height;
+
+    let new_scan_height = nakamotoclient::scan_blocks(height, to_scan, &mut wallet_msg.wallet, electrum_client, scan_key_scalar)?;
+
+    wallet_msg.scan_status.scan_height = new_scan_height;
+
+    loginfo(&format!("{:?}", wallet_msg.wallet.list_outpoints()));
 
     Ok(wallet_msg.to_json().map_err(|e| e.to_string())?)
-}
-
-pub fn scan_to_tip(blob: String) -> Result<String, String> {
-    // 0 means scan to tip
-    scan_next_n_blocks(blob, 170000)
-}
-
-pub fn get_wallet_info(blob: String) -> Result<ScanStatus, String> {
-    let wallet_msg = WalletMessage::from_json(blob)
-        .map_err(|e| e.to_string())?; 
-
-    let scan_status = wallet_msg.wallet.scan_status;
-
-    let scan_height = scan_status.scan_height;
-    let tip_height = nakamotoclient::get_tip()
-        .map_err(|e| e.to_string())?;
-
-    Ok(ScanStatus {
-        scan_height,
-        block_tip: tip_height,
-    })
 }
 
 pub fn get_wallet_balance(blob: String) -> u64 {

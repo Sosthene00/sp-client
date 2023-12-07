@@ -56,13 +56,9 @@ impl Wallet {
         self.total_amt = 0;
     }
 
-    pub fn get_scan_height(&self) -> u32 {
-        self.scan_status.scan_height
-    }
-
-    pub fn get_sum_owned(&self) -> u64 {
-        self.outputs.iter()
-            .fold(0, |acc, x| acc + x.amount)
+    pub fn update_amt_owned(&mut self) {
+        self.total_amt = self.outputs.iter()
+            .fold(0, |acc, x| acc + x.amount);
     }
 
     pub fn insert_outpoint(&mut self, owned: OwnedOutput) {

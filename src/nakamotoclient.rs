@@ -87,11 +87,12 @@ pub fn get_peer_count() -> Result<u32, String> {
 }
 
 pub fn scan_blocks(
-    mut n_blocks_to_scan: u32,
+    from_height: u32,
+    n_blocks_to_scan: u32,
     wallet: &mut Wallet,
     electrum_client: electrum_client::Client,
     scan_key_scalar: Scalar,
-) -> anyhow::Result<(), String> {
+) -> anyhow::Result<u32, String> {
     let handle = get_global_handle()?;
 
     let sp_receiver = wallet.sp_wallet.clone();
@@ -102,20 +103,12 @@ pub fn scan_blocks(
     let filterchannel = handle.filters();
     let blkchannel = handle.blocks();
 
-    let scan_height = wallet.scan_status.scan_height;
     let tip_height = handle.get_tip()
         .map_err(|e| e.to_string())?.0 as u32;
 
-    // 0 means scan to tip
-    if n_blocks_to_scan == 0 {
-        n_blocks_to_scan = tip_height - scan_height;
-    }
-
-    loginfo(format!("scan_height: {:?}", scan_height).as_str());
-
-    let start = scan_height + 1;
-    let end = if scan_height + n_blocks_to_scan <= tip_height {
-        scan_height + n_blocks_to_scan
+    let start = from_height + 1;
+    let end = if start + n_blocks_to_scan <= tip_height {
+        start + n_blocks_to_scan
     } else {
         tip_height
     };
@@ -176,8 +169,8 @@ pub fn scan_blocks(
                 for r in res {
                     wallet.insert_outpoint(r)
                 }
-                let amount = wallet.get_sum_owned();
-                send_amount_update(amount);
+                wallet.update_amt_owned();
+                send_amount_update(wallet.total_amt);
                 send_scan_progress(ScanProgress {
                     start,
                     current: n,
@@ -190,8 +183,7 @@ pub fn scan_blocks(
             // println!("no tweak data for this block");
         }
     }
-    wallet.update_scan_height(end);
-    Ok(())
+    Ok(end)
 }
 
 pub fn start_nakamoto_client() -> anyhow::Result<(), String> {
