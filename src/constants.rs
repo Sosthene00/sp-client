@@ -10,6 +10,7 @@ pub struct LogEntry {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ScanStatus {
+    pub birthday: u32,
     pub scan_height: u32,
     pub block_tip: u32,
 }

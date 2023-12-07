@@ -126,3 +126,22 @@ pub fn get_receiving_address(blob: String) -> String {
 
     sp_receiver.get_receiving_address()
 }
+
+pub fn set_wallet_birthday(blob: String, new_birthday: u32) -> Result<String, String> {
+    let mut wallet_msg = WalletMessage::from_json(blob)
+        .map_err(|e| e.to_string())?;
+
+    // Update block tip
+    let current_tip = nakamotoclient::get_tip()?;
+    if wallet_msg.scan_status.block_tip < current_tip {
+        wallet_msg.scan_status.block_tip = current_tip;
+    }
+
+    // Update birthday in wallet
+    wallet_msg.scan_status.birthday = new_birthday;
+
+    // We also drop all the outpoints and reset scan_height to birthday
+    wallet_msg.wallet.reset_scan();
+
+    Ok(wallet_msg.to_json().map_err(|e| e.to_string())?)
+}

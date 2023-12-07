@@ -49,22 +49,11 @@ pub struct Wallet {
 }
 
 impl Wallet {
-    pub fn update_scan_height(&mut self, new: u32) {
-        self.scan_status.scan_height = new;
-    }
-
-    pub fn reset_scan_height(&mut self, scan_height: u32) {
-        self.scan_status.scan_height = scan_height;
-        let mut to_remove: Vec<_> = vec![];
-        for (i, o) in self.outputs.iter().enumerate() {
-            if o.blockheight < scan_height.try_into().unwrap() {
-                to_remove.push(i);
-            }
-        }
-        for i in to_remove {
-            self.outputs.remove(i);
-        }
-        self.total_amt = self.get_sum_owned();
+    pub fn reset_scan(&mut self) {
+        // drop all outpoints
+        self.outputs = vec![];
+        // reset amount to 0
+        self.total_amt = 0;
     }
 
     pub fn get_scan_height(&self) -> u32 {
