@@ -1,12 +1,13 @@
 use std::str::FromStr;
 
 use bip39::Mnemonic;
-use bitcoin::{secp256k1::{Scalar, Secp256k1}, util::bip32::{DerivationPath, ExtendedPrivKey}, Network};
+use bitcoin::{secp256k1::{Scalar, Secp256k1}, util::bip32::{DerivationPath, ExtendedPrivKey}, Network, TxOut, Address, Script, psbt::{Psbt, Input, raw}, Transaction, PackedLockTime, TxIn, Witness, Sequence, consensus::encode};
+use bitcoin::hashes::hex::FromHex;
 use flutter_rust_bridge::StreamSink;
 
 use crate::{
-    constants::{LogEntry, ScanProgress, Status},
-    wallet::{self, WalletMessage},
+    constants::{LogEntry, ScanProgress, Status, SpendMessage},
+    wallet::{self, WalletMessage, sign_psbt},
     electrumclient::create_electrum_client,
     nakamotoclient,
     stream::{self, loginfo},
@@ -148,4 +149,113 @@ pub fn get_spendable_outputs(blob: String) -> Result<Vec<String>, String> {
         })
         .collect()
     )
+}
+
+pub fn sign_psbt_at(blob: String, psbt: String, input_index: u32) -> Result<String, String> {
+    let wallet_msg = WalletMessage::from_json(blob)
+        .map_err(|e| e.to_string())?;
+
+    let mut psbt: Psbt = serde_json::from_str(&psbt)
+        .map_err(|e| e.to_string())?;
+
+    let is_testnet = wallet_msg.wallet.sp_wallet.is_testnet;
+
+    sign_psbt(&mut psbt, input_index as usize, wallet_msg.mnemonic, is_testnet)
+        .map_err(|e| e.to_string())?;
+
+    serde_json::to_string(&psbt).map_err(|e| e.to_string())
+}
+
+pub fn finalize_psbt(psbt: String) -> Result<String, String> {
+    let mut psbt: Psbt = serde_json::from_str(&psbt)
+        .map_err(|e| e.to_string())?;
+
+    wallet::finalize_psbt(&mut psbt).map_err(|e| e.to_string())?;
+
+    let final_tx = psbt.extract_tx();
+
+    let hex = encode::serialize_hex(&final_tx);
+
+    Ok(hex)
+}
+
+pub fn spend_to(spending_request: String) -> Result<String, String> {
+    loginfo(&format!("{:?}", &spending_request));
+    let spend_info: SpendMessage = serde_json::from_str(&spending_request)
+        .map_err(|e| e.to_string())?;
+
+    loginfo(&format!("Received SpendMessage: {:?}", spend_info));
+
+    let mut inputs: Vec<TxIn> = vec![];
+    let mut inputs_data: Vec<(Script, u64, Scalar)> = vec![];
+
+    for input in spend_info.inputs {
+
+        loginfo(&format!("adding {:?} to inputs", input.txoutpoint));
+        inputs.push(TxIn { 
+            previous_output: input.txoutpoint,
+            script_sig: Script::new(), 
+            sequence: Sequence::MAX, 
+            witness: Witness::new()
+        });
+
+        loginfo(&format!("adding {:?} {} {} to inputs_data", input.script, input.amount, input.tweak));
+        let scalar = Scalar::from_be_bytes(FromHex::from_hex(&input.tweak).unwrap()).unwrap();
+
+        inputs_data.push((input.script, input.amount, scalar));
+    }
+
+    let _outputs: Result<Vec<TxOut>, String> = spend_info.outputs.iter()
+        .map(|o| {
+            let mut value: u64;
+            let address: Address;
+            if let Some((add, amt)) = o.split_once(':') {
+                address = Address::from_str(add)
+                    .map_err(|e| e.to_string())?;
+                value = amt.trim().parse::<u64>()
+                    .map_err(|e| e.to_string())?;
+            } else {
+                let error_msg = format!("Can't parse output: {}", o);
+                return Err(error_msg);
+            }
+            // value - fee
+            value = value - (spend_info.fee as u64 * 220);
+            Ok(TxOut {
+                value,
+                script_pubkey: address.script_pubkey()
+            })
+        })
+        .collect();
+
+    let outputs = _outputs?;
+
+    // loginfo(&format!("inputs: {:?}", inputs));
+    // loginfo(&format!("outputs: {:?}", outputs));
+
+    let tx = Transaction {
+        version: 2,
+        lock_time: PackedLockTime::ZERO,
+        input: inputs,
+        output: outputs
+    };
+
+    let mut psbt = Psbt::from_unsigned_tx(tx).unwrap();
+
+    // Add the witness utxo to the input in psbt
+    for (i, input_data) in inputs_data.iter().enumerate() {
+        let (script_pubkey, value, tweak) = input_data;
+        let witness_txout = TxOut {
+            value: *value,
+            script_pubkey: script_pubkey.clone()
+        };
+        let mut psbt_input = Input { witness_utxo: Some(witness_txout), ..Default::default() };
+        psbt_input.proprietary.insert(raw::ProprietaryKey {
+            prefix: b"sp".to_vec(),
+            subtype: 0u8,
+            key: b"tweak".to_vec()
+        }, tweak.to_be_bytes().to_vec());
+        psbt.inputs[i] = psbt_input;
+    }
+
+    serde_json::to_string(&psbt).map_err(|e| e.to_string())
 }

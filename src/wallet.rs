@@ -1,8 +1,8 @@
-use std::str::FromStr;
+use std::{str::FromStr, ops::Deref, collections::BTreeMap, borrow::BorrowMut};
 
 use anyhow::{Error, Result};
 use bip39::Mnemonic;
-use bitcoin::{secp256k1::Secp256k1, OutPoint, Txid, util::bip32::{ExtendedPrivKey, DerivationPath}, Network};
+use bitcoin::{secp256k1::{Secp256k1, Message, SecretKey, SignOnly, Scalar, constants::SCHNORRSIG_SIGNATURE_SIZE}, OutPoint, Txid, util::{bip32::{ExtendedPrivKey, DerivationPath}, sighash::SighashCache, taproot::TapLeafHash}, Network, psbt::{Psbt, Input, PsbtSighashType, Prevouts, raw::ProprietaryKey}, Transaction, TxOut, SchnorrSighashType, KeyPair, SchnorrSig, Witness, blockdata::script};
 use serde::{Serialize, Deserialize};
 use silentpayments::receiving::Receiver;
 use chrono::{DateTime, Utc};
@@ -120,3 +120,100 @@ pub fn setup(label: String, network: String, seed_words: Option<String>) -> Resu
 
     Ok(WalletMessage::new(label, mnemonic.to_string(), wallet).to_json()?)
 }
+
+fn taproot_sighash<T: Deref<Target = Transaction>>(
+        input: &Input,
+        prevouts: Vec<&TxOut>,
+        input_index: usize,
+        cache: &mut SighashCache<T>,
+        tapleaf_hash: Option<TapLeafHash>
+    ) -> Result<(Message, PsbtSighashType), bitcoin::util::sighash::Error> {
+        let prevouts = Prevouts::All(&prevouts);
+
+        let hash_ty = input
+            .sighash_type
+            .map(|ty| ty.schnorr_hash_ty())
+            .unwrap_or(Ok(SchnorrSighashType::Default))?;
+
+        let sighash = match tapleaf_hash {
+            Some(leaf_hash) => cache.taproot_script_spend_signature_hash(
+                input_index,
+                &prevouts,
+                leaf_hash,
+                hash_ty,
+            )?,
+            None => cache.taproot_key_spend_signature_hash(input_index, &prevouts, hash_ty)?,
+        };
+        let msg = Message::from_slice(&sighash).expect("sighashes are 32 bytes");
+        Ok((msg, hash_ty.into()))
+    }
+
+pub fn sign_psbt(
+        psbt: &mut Psbt,
+        input_index: usize,
+        mnemonic: String,
+        is_testnet: bool
+    ) -> Result<()> {
+        let mut cache = SighashCache::new(&psbt.unsigned_tx);
+
+        let input: &Input = &psbt.inputs[input_index];
+
+        let mut prevouts: Vec<&TxOut> = vec![];
+
+        for input in &psbt.inputs {
+            if let Some(witness_utxo) = &input.witness_utxo {
+                prevouts.push(witness_utxo);
+            }
+        }
+        
+        let tap_leaf_hash: Option<TapLeafHash> = None;
+
+        let (msg, sighash_ty) = taproot_sighash(&input, prevouts, input_index, &mut cache, tap_leaf_hash)?;
+
+        // Construct the signing key
+        let secp = Secp256k1::signing_only();
+        let seed = Mnemonic::from_str(&mnemonic).unwrap().to_seed("");
+        let network = if is_testnet { Network::Testnet } else { Network::Bitcoin };
+        let (_, spend_privkey) = derive_sp_keys(&seed, network, &secp)?;
+
+        let tweak = input.proprietary.get(&ProprietaryKey {
+            prefix: b"sp".to_vec(),
+            subtype: 0u8,
+            key: b"tweak".to_vec()
+        });
+
+        if tweak.is_none() { panic!("Missing tweak") };
+
+        let tweak = SecretKey::from_slice(tweak.unwrap().as_slice()).unwrap();
+
+        let sk = spend_privkey.add_tweak(&tweak.into()).unwrap();
+
+        let sig = secp.sign_schnorr(&msg, &KeyPair::from_secret_key(&secp, &sk));
+
+        psbt.inputs[input_index].tap_key_sig = Some(SchnorrSig { sig, hash_ty: sighash_ty.schnorr_hash_ty().unwrap() });
+
+        Ok(())
+    }
+
+pub(crate) fn finalize_psbt(psbt: &mut Psbt) -> Result<()> {
+        psbt.inputs.iter_mut()
+            .for_each(|i| {
+                if let Some(sig) = i.tap_key_sig {
+                    let mut script_witness = Witness::new();
+                    script_witness.push(sig.to_vec());
+                    i.final_script_witness = Some(script_witness);
+                    i.tap_key_sig = None;
+                } else {
+                    panic!("Missing signature");
+                }
+            });
+
+        // Clear all the data fields as per the spec.
+        psbt.inputs[0].partial_sigs = BTreeMap::new();
+        psbt.inputs[0].sighash_type = None;
+        psbt.inputs[0].redeem_script = None;
+        psbt.inputs[0].witness_script = None;
+        psbt.inputs[0].bip32_derivation = BTreeMap::new();
+
+        Ok(())
+    }
