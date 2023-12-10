@@ -38,3 +38,10 @@ pub struct OwnedOutput {
     pub script: Script,
     pub status: Status,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SpendMessage {
+    pub inputs: Vec<OwnedOutput>,
+    pub outputs: Vec<String>,
+    pub fee: u32,
+}
