@@ -87,14 +87,7 @@ impl Wallet {
     }
 }
 
-pub fn setup(label: String, network: String, seed_words: Option<String>) -> Result<String> {
-    let network = Network::from_str(&network)?;
-
-    let mnemonic = if let Some(words) = seed_words { Mnemonic::from_str(&words).unwrap() }
-    else { Mnemonic::generate(12).unwrap() }; 
-    let seed = &mnemonic.to_seed("");
-
-    let secp = Secp256k1::new();
+fn derive_sp_keys(seed: &[u8;64], network: Network, secp: &Secp256k1<SignOnly>) -> Result<(SecretKey, SecretKey)> {
     let master_key = ExtendedPrivKey::new_master(network, seed).unwrap();
     let coin_type_derivation = if network == Network::Bitcoin { "0'" } else { "1'" };
 
@@ -103,6 +96,19 @@ pub fn setup(label: String, network: String, seed_words: Option<String>) -> Resu
 
     let scan_privkey = master_key.derive_priv(&secp, &scan_key_path)?.private_key;
     let spend_privkey = master_key.derive_priv(&secp, &spend_key_path)?.private_key;
+
+    Ok((scan_privkey, spend_privkey))
+}
+
+pub fn setup(label: String, network: String, seed_words: Option<String>) -> Result<String> {
+    let network = Network::from_str(&network)?;
+
+    let mnemonic = if let Some(words) = seed_words { Mnemonic::from_str(&words).unwrap() }
+    else { Mnemonic::generate(12).unwrap() }; 
+    let seed = &mnemonic.to_seed("");
+
+    let secp = Secp256k1::signing_only();
+    let (scan_privkey, spend_privkey) = derive_sp_keys(seed, network, &secp)?;
 
     let receiver = Receiver::new(0, scan_privkey.public_key(&secp), spend_privkey.public_key(&secp), network != Network::Bitcoin)?;
 
