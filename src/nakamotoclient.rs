@@ -5,6 +5,7 @@ use bitcoin::{
     secp256k1::{PublicKey, Scalar, Secp256k1},
     util::bip158::BlockFilter,
     Block, BlockHash, Script, Transaction, TxOut, XOnlyPublicKey, OutPoint,
+    hashes::hex::ToHex
 };
 use electrum_client::ElectrumApi;
 use lazy_static::lazy_static;
@@ -285,7 +286,7 @@ fn scan_block(
                     txoutpoint: OutPoint::new(tx.txid(), index),
                     tweak_data,
                     index: 0, // how do we get this?
-                    tweak: scalar.to_be_bytes(),
+                    tweak: scalar.to_be_bytes().as_slice().to_hex(),
                     blockheight,
                     amount: txout.value,
                     script: txout.script_pubkey,
