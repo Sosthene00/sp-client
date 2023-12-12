@@ -178,6 +178,18 @@ pub fn finalize_psbt(psbt: String) -> Result<String, String> {
 
     Ok(hex)
 }
+pub fn broadcast_raw_transaction(tx_hex: String) -> Result<String, String> {
+    let tx: Transaction = deserialize(&Vec::from_hex(&tx_hex)
+        .map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string()
+    )?;
+
+    let txid = tx.txid().to_string();
+
+    nakamotoclient::broadcast_raw_transaction(tx)?;
+
+    Ok(txid)
+}
 
 pub fn spend_to(spending_request: String) -> Result<String, String> {
     loginfo(&format!("{:?}", &spending_request));
