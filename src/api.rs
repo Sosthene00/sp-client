@@ -151,6 +151,44 @@ pub fn get_spendable_outputs(blob: String) -> Result<Vec<String>, String> {
     )
 }
 
+pub fn transaction_size(psbt: String) -> Result<usize, String> {
+    let mut psbt: Psbt = serde_json::from_str(&psbt)
+        .map_err(|e| e.to_string())?;
+
+    for i in 0..psbt.inputs.len() {
+        sign_psbt(&mut psbt, i, "".to_owned(), true)
+            .map_err(|e| e.to_string())?;
+    }
+
+    wallet::finalize_psbt(&mut psbt).map_err(|e| e.to_string())?;
+
+    let spoof = psbt.extract_tx();
+
+    Ok(spoof.vsize())
+}
+
+pub fn update_fees(psbt: String, subtract_from: usize, fee_rate: u64) -> Result<String, String> {
+    let vsize = transaction_size(psbt.clone())?;
+
+    let total_fees = vsize as u64 * fee_rate;
+
+    let mut psbt: Psbt = serde_json::from_str(&psbt)
+        .map_err(|e| e.to_string())?;
+ 
+    let unsigned_tx = &mut psbt.unsigned_tx;
+
+    // check subtract_from is not out of bound
+    if subtract_from >= unsigned_tx.output.len() {
+        return Err("subtract_from is out of bound: only {} outputs in transaction".to_owned());
+    }
+
+    let output = &mut unsigned_tx.output[subtract_from];
+    
+    output.value -= total_fees;
+
+    serde_json::to_string(&psbt).map_err(|e| e.to_string())
+}
+
 pub fn sign_psbt_at(blob: String, psbt: String, input_index: u32) -> Result<String, String> {
     let wallet_msg = WalletMessage::from_json(blob)
         .map_err(|e| e.to_string())?;
