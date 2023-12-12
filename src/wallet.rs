@@ -87,7 +87,7 @@ impl Wallet {
     }
 }
 
-fn derive_sp_keys(seed: &[u8;64], network: Network, secp: &Secp256k1<SignOnly>) -> Result<(SecretKey, SecretKey)> {
+pub fn derive_sp_keys(seed: &[u8;64], network: Network, secp: &Secp256k1<SignOnly>) -> Result<(SecretKey, SecretKey)> {
     let master_key = ExtendedPrivKey::new_master(network, seed).unwrap();
     let coin_type_derivation = if network == Network::Bitcoin { "0'" } else { "1'" };
 
