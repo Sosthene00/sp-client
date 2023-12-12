@@ -394,3 +394,12 @@ fn search_filter_for_script_pubkeys(
 
     found
 }
+
+pub(crate) fn broadcast_raw_transaction(tx: Transaction) -> Result<(), String> {
+    let handle = get_global_handle()?;
+
+    handle.submit_transaction(tx)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
