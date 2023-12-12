@@ -1,13 +1,15 @@
 use std::str::FromStr;
 
 use bip39::Mnemonic;
-use bitcoin::{secp256k1::{Scalar, Secp256k1}, util::bip32::{DerivationPath, ExtendedPrivKey}, Network, TxOut, Address, Script, psbt::{Psbt, Input, raw}, Transaction, PackedLockTime, TxIn, Witness, Sequence, consensus::encode};
+use bitcoin::{secp256k1::{Scalar, Secp256k1, XOnlyPublicKey, SecretKey}, util::bip32::{DerivationPath, ExtendedPrivKey}, Network, TxOut, Address, Script, psbt::{Psbt, Input, raw, Output}, Transaction, PackedLockTime, TxIn, Witness, Sequence, consensus::{encode, serialize, deserialize}, schnorr::TapTweak};
 use bitcoin::hashes::hex::FromHex;
 use flutter_rust_bridge::StreamSink;
+use silentpayments::sending::SilentPaymentAddress;
+use silentpayments::utils as sp_utils;
 
 use crate::{
-    constants::{LogEntry, ScanProgress, Status, SpendMessage},
-    wallet::{self, WalletMessage, sign_psbt},
+    constants::{LogEntry, ScanProgress, Status, SpendMessage, PSBT_SP_PREFIX, PSBT_SP_SUBTYPE, PSBT_SP_TWEAK_KEY, PSBT_SP_ADDRESS_KEY, NUMS_KEY},
+    wallet::{self, WalletMessage, sign_psbt, derive_sp_keys, get_a_sum_secret_keys},
     electrumclient::create_electrum_client,
     nakamotoclient,
     stream::{self, loginfo},
@@ -197,6 +199,56 @@ pub fn sign_psbt_at(blob: String, psbt: String, input_index: u32) -> Result<Stri
         .map_err(|e| e.to_string())?;
 
     let is_testnet = wallet_msg.wallet.sp_wallet.is_testnet;
+
+    // Replace the placeholders with the right addresses
+    let unsigned_tx = &mut psbt.unsigned_tx;
+
+    // Get outpoints_hash
+    let to_hash: Vec<(String, u32)> = unsigned_tx.input.iter()
+        .map(|i| {
+            (i.previous_output.txid.to_string(), i.previous_output.vout)
+        })
+        .collect();
+    let outpoints_hash = sp_utils::hash_outpoints(&to_hash)
+        .map_err(|e| e.to_string())?;
+
+    // get private keys from inputs
+    let secp = Secp256k1::signing_only();
+    let network = if is_testnet { Network::Testnet } else { Network::Bitcoin };
+    let seed = Mnemonic::from_str(&wallet_msg.mnemonic)
+        .map_err(|e| e.to_string())?.to_seed("");
+    let (_, spend_privkey) = derive_sp_keys(&seed, network, &secp)
+        .map_err(|e| e.to_string())?;
+
+    let mut input_privkeys: Vec<SecretKey> = vec![];
+    for input in unsigned_tx.input.iter() {
+        let outpoint = &input.previous_output;
+        let being_spent = wallet_msg.wallet.outputs.iter().find(|o| o.txoutpoint == *outpoint).unwrap();
+        let tweak = Scalar::from_be_bytes(FromHex::from_hex(&being_spent.tweak).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        input_privkeys.push(spend_privkey.add_tweak(&tweak).map_err(|e| e.to_string())?);
+    }
+
+    let a_sum = get_a_sum_secret_keys(&input_privkeys);
+    let partial_secret = sp_utils::sending::sender_calculate_partial_secret(a_sum, outpoints_hash).map_err(|e| e.to_string())?;
+
+    for (i, output) in unsigned_tx.output.iter_mut().enumerate() {
+        // get the sp address from psbt
+        let output_data = &psbt.outputs[i];
+        if let Some(value) = output_data.proprietary.get(&raw::ProprietaryKey {
+            prefix: PSBT_SP_PREFIX.as_bytes().to_vec(),
+            subtype: PSBT_SP_SUBTYPE,
+            key: PSBT_SP_ADDRESS_KEY.as_bytes().to_vec()
+        }) {
+            // Create the right output key
+            let sp_address = SilentPaymentAddress::try_from(deserialize::<String>(&value).unwrap()).unwrap();
+            let output_key = silentpayments::sending::generate_recipient_pubkey(sp_address.into(), partial_secret)
+                .map_err(|e| e.to_string())?;
+            // update the script pubkey
+            output.script_pubkey = Script::new_v1_p2tr_tweaked(output_key.dangerous_assume_tweaked());
+        } else {
+            loginfo(&format!("No sp address for output {}", i));
+        }
+    }
 
     sign_psbt(&mut psbt, input_index as usize, wallet_msg.mnemonic, is_testnet)
         .map_err(|e| e.to_string())?;
