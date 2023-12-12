@@ -172,7 +172,10 @@ pub fn sign_psbt(
 
         // Construct the signing key
         let secp = Secp256k1::signing_only();
-        let seed = Mnemonic::from_str(&mnemonic).unwrap().to_seed("");
+        let seed = match Mnemonic::from_str(&mnemonic) {
+            Ok(m) => m.to_seed(""),
+            Err(_) => [0u8;64], // spoof signature for fee estimation
+        };
         let network = if is_testnet { Network::Testnet } else { Network::Bitcoin };
         let (_, spend_privkey) = derive_sp_keys(&seed, network, &secp)?;
 
