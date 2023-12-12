@@ -45,7 +45,7 @@ impl WalletMessage {
 pub struct Wallet {
     pub sp_wallet: Receiver,
     pub total_amt: u64,
-    outputs: Vec<OwnedOutput>
+    pub outputs: Vec<OwnedOutput>
 }
 
 impl Wallet {
