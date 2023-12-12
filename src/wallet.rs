@@ -220,3 +220,27 @@ pub(crate) fn finalize_psbt(psbt: &mut Psbt) -> Result<()> {
 
         Ok(())
     }
+
+pub fn get_a_sum_secret_keys(input: &Vec<SecretKey>) -> SecretKey {
+    let secp = Secp256k1::new();
+
+    let mut negated_keys: Vec<SecretKey> = vec![];
+
+    for key in input {
+        let (_, parity) = key.x_only_public_key(&secp);
+
+        if parity == bitcoin::secp256k1::Parity::Odd {
+            negated_keys.push(key.negate());
+        } else {
+            negated_keys.push(key.clone());
+        }
+    }
+
+    let (head, tail) = negated_keys.split_first().unwrap();
+
+    let result: SecretKey = tail
+        .iter()
+        .fold(*head, |acc, &item| acc.add_tweak(&item.into()).unwrap());
+
+    result
+    }
