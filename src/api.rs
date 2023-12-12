@@ -178,6 +178,28 @@ pub fn finalize_psbt(psbt: String) -> Result<String, String> {
 
     Ok(hex)
 }
+
+pub fn mark_spent_from_transaction(blob: String, tx_hex: String) -> Result<String, String> {
+    let mut wallet_msg = WalletMessage::from_json(blob)
+        .map_err(|e| e.to_string())?;
+
+    let tx: Transaction = deserialize(&Vec::from_hex(&tx_hex)
+        .map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string()
+    )?;
+
+    let txid = tx.txid();
+
+    for input in tx.input {
+        let res = wallet_msg.wallet.mark_outpoint_spent(input.previous_output, txid);
+        if res.is_err() {
+            loginfo(res.unwrap_err().to_string().as_str());
+        }
+    }
+
+    wallet_msg.to_json().map_err(|e| e.to_string())
+}
+
 pub fn broadcast_raw_transaction(tx_hex: String) -> Result<String, String> {
     let tx: Transaction = deserialize(&Vec::from_hex(&tx_hex)
         .map_err(|e| e.to_string())?)
