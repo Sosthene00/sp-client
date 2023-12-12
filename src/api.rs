@@ -202,8 +202,6 @@ pub fn spend_to(spending_request: String) -> Result<String, String> {
     let mut inputs_data: Vec<(Script, u64, Scalar)> = vec![];
 
     for input in spend_info.inputs {
-
-        loginfo(&format!("adding {:?} to inputs", input.txoutpoint));
         inputs.push(TxIn { 
             previous_output: input.txoutpoint,
             script_sig: Script::new(), 
@@ -211,38 +209,38 @@ pub fn spend_to(spending_request: String) -> Result<String, String> {
             witness: Witness::new()
         });
 
-        loginfo(&format!("adding {:?} {} {} to inputs_data", input.script, input.amount, input.tweak));
-        let scalar = Scalar::from_be_bytes(FromHex::from_hex(&input.tweak).unwrap()).unwrap();
+        let scalar = Scalar::from_be_bytes(FromHex::from_hex(&input.tweak).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
 
         inputs_data.push((input.script, input.amount, scalar));
     }
 
+    // Since we don't have access to private materials for now we use a NUMS key as a placeholder 
+    let placeholder_key = XOnlyPublicKey::from_str(NUMS_KEY)
+        .map_err(|e| format!("Error for key {:?}: {}", NUMS_KEY, e.to_string()))?.dangerous_assume_tweaked();
+
     let _outputs: Result<Vec<TxOut>, String> = spend_info.outputs.iter()
         .map(|o| {
-            let mut value: u64;
             let address: Address;
-            if let Some((add, amt)) = o.split_once(':') {
-                address = Address::from_str(add)
-                    .map_err(|e| e.to_string())?;
-                value = amt.trim().parse::<u64>()
-                    .map_err(|e| e.to_string())?;
-            } else {
-                let error_msg = format!("Can't parse output: {}", o);
-                return Err(error_msg);
+
+            match SilentPaymentAddress::try_from(o.address.as_str()) {
+                Ok(sp_address) => {
+                    let network = if sp_address.is_testnet() { Network::Testnet } else { Network::Bitcoin };
+
+                    address = Address::from_script(&Script::new_v1_p2tr_tweaked(placeholder_key), network).unwrap();
+                },
+                Err(_) => {
+                    address = Address::from_str(&o.address).map_err(|e| e.to_string())?;
+                },
             }
-            // value - fee
-            value = value - (spend_info.fee as u64 * 220);
+
             Ok(TxOut {
-                value,
+                value: o.value,
                 script_pubkey: address.script_pubkey()
             })
         })
         .collect();
 
     let outputs = _outputs?;
-
-    // loginfo(&format!("inputs: {:?}", inputs));
-    // loginfo(&format!("outputs: {:?}", outputs));
 
     let tx = Transaction {
         version: 2,
@@ -262,11 +260,27 @@ pub fn spend_to(spending_request: String) -> Result<String, String> {
         };
         let mut psbt_input = Input { witness_utxo: Some(witness_txout), ..Default::default() };
         psbt_input.proprietary.insert(raw::ProprietaryKey {
-            prefix: b"sp".to_vec(),
-            subtype: 0u8,
-            key: b"tweak".to_vec()
+            prefix: PSBT_SP_PREFIX.as_bytes().to_vec(),
+            subtype: PSBT_SP_SUBTYPE,
+            key: PSBT_SP_TWEAK_KEY.as_bytes().to_vec()
         }, tweak.to_be_bytes().to_vec());
         psbt.inputs[i] = psbt_input;
+    }
+    
+    for (i, output) in spend_info.outputs.iter().enumerate() {
+        if let Ok(sp_address) = SilentPaymentAddress::try_from(output.address.as_str()) {
+            // Add silentpayment address to the output
+            let mut psbt_output = Output { ..Default::default() };
+            psbt_output.proprietary.insert(raw::ProprietaryKey {
+                prefix: PSBT_SP_PREFIX.as_bytes().to_vec(),
+                subtype: PSBT_SP_SUBTYPE,
+                key: PSBT_SP_ADDRESS_KEY.as_bytes().to_vec()
+            }, serialize(&sp_address.to_string()));
+            psbt.outputs[i] = psbt_output;
+        } else {
+            // Regular address, we don't need to add more data
+            continue;
+        }
     }
 
     serde_json::to_string(&psbt).map_err(|e| e.to_string())
