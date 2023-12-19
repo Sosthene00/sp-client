@@ -37,9 +37,9 @@ pub fn setup(
     spend_hex: String,
     birthday: u32,
     is_testnet: bool,
-) -> Result<(), String> {
+) -> Result<String, String> {
     const ERR_MSG: &str = "Must provide either mnemonic or scan/spend secret key";
-    let _: Result<(), String> = match (mnemonic.is_empty(), scan_hex.is_empty(), spend_hex.is_empty()) {
+    match (mnemonic.is_empty(), scan_hex.is_empty(), spend_hex.is_empty()) {
         (true, false, false) => {
             // We directly restore with the keys
             let scan_sk = bitcoin::secp256k1::SecretKey::from_str(&scan_hex)
@@ -50,26 +50,30 @@ pub fn setup(
                 .map_err(|e| e.to_string())?;
             sp_client.save_to_disk()
                 .map_err(|e| e.to_string())?;
-            return Ok(());
+            return Ok("".to_owned());
         },
         (false, true, true) => {
             // We restore from seed
-            let (scan_sk, spend_sk) = derive_keys_from_mnemonic(&mnemonic, PASSPHRASE, is_testnet)
+            let (_, scan_sk, spend_sk) = derive_keys_from_mnemonic(&mnemonic, PASSPHRASE, is_testnet)
                 .map_err(|e| e.to_string())?;
             let sp_client = SpClient::new(label, scan_sk, spend_sk, birthday, is_testnet, files_dir)
                 .map_err(|e| e.to_string())?;
             sp_client.save_to_disk()
                 .map_err(|e| e.to_string())?;
-            return Ok(());
+            return Ok("".to_owned());
         },
-        _ => Err(ERR_MSG),
-    }?;
-    loginfo("sp client has been setup");
-
-    nakamotoclient::setup(files_dir);
-    loginfo("nakamoto config has been setup");
-
-    Ok(())
+        (true, true, true) => {
+            // We create a new wallet
+            let (m, scan_sk, spend_sk) = derive_keys_from_mnemonic("", PASSPHRASE, is_testnet)
+                .map_err(|e| e.to_string())?;
+            let sp_client = SpClient::new(label, scan_sk, spend_sk, birthday, is_testnet, files_dir)
+                .map_err(|e| e.to_string())?;
+            sp_client.save_to_disk()
+                .map_err(|e| e.to_string())?;
+            return Ok(m.to_string()); // We return the mnemonic to be displayed to the user
+        },
+        _ => Err(ERR_MSG.to_owned()),
+    }
 }
 
 /// Reset the last_scan of the wallet to its birthday, removing all outpoints
