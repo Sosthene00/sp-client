@@ -1,48 +1,33 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    io::Write,
     str::FromStr,
 };
 
-use bip39::{
-    rand::{self, seq::SliceRandom},
-    Mnemonic,
-};
-
-use bitcoin::psbt::{raw, Input, Output};
 use bitcoin::{
     bip32::{DerivationPath, Xpriv},
     consensus::{deserialize, serialize},
-    hashes::hex::FromHex,
     key::TapTweak,
     psbt::PsbtSighashType,
-    secp256k1::{
-        constants::SECRET_KEY_SIZE, Keypair, Message, PublicKey, Scalar, Secp256k1, SecretKey,
-        ThirtyTwoByteHash,
-    },
+    secp256k1::{Keypair, Message, PublicKey, Scalar, Secp256k1, SecretKey, ThirtyTwoByteHash},
     sighash::{Prevouts, SighashCache},
     taproot::Signature,
-    Address, Amount, BlockHash, Network, ScriptBuf, TapLeafHash, Transaction, TxIn, TxOut, Witness,
+    Address, Amount, Network, OutPoint, ScriptBuf, TapLeafHash, Transaction, TxIn, TxOut, Witness,
 };
-use log::info;
-use nakamoto::common::bitcoin::{OutPoint, Txid};
-
+use bitcoin::{
+    hashes::Hash,
+    psbt::{raw, Input, Output},
+};
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
-use serde_with::DisplayFromStr;
 
-use silentpayments::receiving::Receiver;
+use silentpayments::receiving::{Label, Receiver};
+use silentpayments::sending::SilentPaymentAddress;
 use silentpayments::utils as sp_utils;
-use silentpayments::{receiving::Label, sending::SilentPaymentAddress};
 
 use anyhow::{Error, Result};
 
-use crate::db::FileWriter;
-use crate::{
-    constants::{
-        DUST_THRESHOLD, NUMS, PSBT_SP_ADDRESS_KEY, PSBT_SP_PREFIX, PSBT_SP_SUBTYPE,
-        PSBT_SP_TWEAK_KEY,
-    },
-    stream::send_amount_update,
+use crate::constants::{
+    DUST_THRESHOLD, NUMS, PSBT_SP_ADDRESS_KEY, PSBT_SP_PREFIX, PSBT_SP_SUBTYPE, PSBT_SP_TWEAK_KEY,
 };
 
 pub use bitcoin::psbt::Psbt;
@@ -63,21 +48,71 @@ pub enum OutputSpendStatus {
     Mined(MinedInBlock),
 }
 
+type WalletFingerprint = [u8; 8];
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct OwnedOutput {
-    pub txoutpoint: String,
     pub blockheight: u32,
     pub tweak: String,
-    pub amount: u64,
+    pub amount: Amount,
     pub script: String,
     pub label: Option<String>,
     pub spend_status: OutputSpendStatus,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct OutputList {
+    wallet_fingerprint: WalletFingerprint,
+    outputs: HashMap<OutPoint, OwnedOutput>,
+}
+
+impl OutputList {
+    pub fn new(scan_pk: PublicKey, spend_pk: PublicKey) -> Self {
+        // take a fingerprint of the wallet by hashing its keys
+        let mut engine = silentpayments::bitcoin_hashes::sha256::HashEngine::default();
+        engine
+            .write_all(&scan_pk.serialize())
+            .expect("Failed to write scan_pk to engine");
+        engine
+            .write_all(&spend_pk.serialize())
+            .expect("Failed to write spend_pk to engine");
+        let hash = silentpayments::bitcoin_hashes::sha256::Hash::from_engine(engine);
+        let mut wallet_fingerprint = [0u8; 8];
+        wallet_fingerprint.copy_from_slice(&hash.to_byte_array()[..8]);
+        let outputs = HashMap::new();
+        Self {
+            wallet_fingerprint,
+            outputs,
+        }
+    }
+
+    pub fn to_outpoints_list(&self) -> HashMap<OutPoint, OwnedOutput> {
+        self.outputs.clone()
+    }
+
+    pub fn extend_from(&mut self, new: HashMap<OutPoint, OwnedOutput>) {
+        self.outputs.extend(new);
+    }
+
+    pub fn get_balance(&self) -> Amount {
+        self.outputs
+            .iter()
+            .filter(|(_, o)| o.spend_status == OutputSpendStatus::Unspent)
+            .fold(Amount::from_sat(0), |acc, x| acc + x.1.amount)
+    }
+
+    pub fn to_spendable_list(&self) -> HashMap<OutPoint, OwnedOutput> {
+        self.to_outpoints_list()
+            .into_iter()
+            .filter(|(_, o)| o.spend_status == OutputSpendStatus::Unspent)
+            .collect()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Recipient {
     pub address: String, // either old school or silent payment
-    pub amount: u64,
+    pub amount: Amount,
     pub nb_outputs: u32, // if address is not SP, only 1 is valid
 }
 
@@ -87,19 +122,15 @@ pub enum SpendKey {
     Public(PublicKey),
 }
 
-#[serde_as]
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct SpClient {
     pub label: String,
     scan_sk: SecretKey,
     spend_key: SpendKey,
-    pub mnemonic: Option<String>,
+    mnemonic: Option<String>,
     pub sp_receiver: Receiver,
     pub birthday: u32,
     pub last_scan: u32,
-    #[serde_as(as = "HashMap<DisplayFromStr, _>")]
-    owned: HashMap<OutPoint, OwnedOutput>,
-    writer: FileWriter,
 }
 
 impl SpClient {
@@ -110,7 +141,6 @@ impl SpClient {
         mnemonic: Option<String>,
         birthday: u32,
         is_testnet: bool,
-        path: String,
     ) -> Result<Self> {
         let secp = Secp256k1::signing_only();
         let scan_pubkey = scan_sk.public_key(&secp);
@@ -131,7 +161,6 @@ impl SpClient {
                 )?;
             }
         }
-        let writer = FileWriter::new(path, label.clone())?;
 
         Ok(Self {
             label,
@@ -141,130 +170,11 @@ impl SpClient {
             sp_receiver,
             birthday,
             last_scan: if birthday == 0 { 0 } else { birthday - 1 },
-            owned: HashMap::new(),
-            writer,
         })
-    }
-
-    pub fn try_init_from_disk(label: String, path: String) -> Result<SpClient> {
-        let empty = SpClient::new(
-            label,
-            SecretKey::from_slice(&[1u8; SECRET_KEY_SIZE]).unwrap(),
-            SpendKey::Secret(SecretKey::from_slice(&[1u8; SECRET_KEY_SIZE]).unwrap()),
-            None,
-            0,
-            false,
-            path,
-        )?;
-
-        empty.retrieve_from_disk()
     }
 
     pub fn update_last_scan(&mut self, scan_height: u32) {
         self.last_scan = scan_height;
-    }
-
-    pub fn get_spendable_amt(&self) -> u64 {
-        self.owned
-            .values()
-            .filter(|x| x.spend_status == OutputSpendStatus::Unspent)
-            .fold(0, |acc, x| acc + x.amount)
-    }
-
-    #[allow(dead_code)]
-    pub fn get_unconfirmed_amt(&self) -> u64 {
-        self.owned
-            .values()
-            .filter(|x| match x.spend_status {
-                OutputSpendStatus::Spent(_) => true,
-                _ => false,
-            })
-            .fold(0, |acc, x| acc + x.amount)
-    }
-
-    pub fn extend_owned(&mut self, owned: Vec<(OutPoint, OwnedOutput)>) {
-        self.owned.extend(owned);
-    }
-
-    pub fn check_outpoint_owned(&self, outpoint: OutPoint) -> bool {
-        self.owned.contains_key(&outpoint)
-    }
-
-    pub fn mark_transaction_inputs_as_spent(
-        &mut self,
-        tx: nakamoto::chain::Transaction,
-    ) -> Result<()> {
-        let txid = tx.txid();
-
-        // note: this currently fails for collaborative transactions
-        for input in tx.input {
-            self.mark_outpoint_spent(input.previous_output, txid)?;
-        }
-
-        send_amount_update(self.get_spendable_amt());
-
-        self.save_to_disk()
-    }
-
-    pub fn mark_outpoint_spent(&mut self, outpoint: OutPoint, txid: Txid) -> Result<()> {
-        if let Some(owned) = self.owned.get_mut(&outpoint) {
-            match owned.spend_status {
-                OutputSpendStatus::Unspent => {
-                    info!("marking {} as spent by tx {}", owned.txoutpoint, txid);
-                    owned.spend_status = OutputSpendStatus::Spent(txid.to_string());
-                }
-                _ => return Err(Error::msg("owned outpoint is already spent")),
-            }
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("owned outpoint not found"))
-        }
-    }
-
-    pub fn mark_outpoint_mined(&mut self, outpoint: OutPoint, blkhash: BlockHash) -> Result<()> {
-        if let Some(owned) = self.owned.get_mut(&outpoint) {
-            match owned.spend_status {
-                OutputSpendStatus::Mined(_) => {
-                    return Err(Error::msg("owned outpoint is already mined"))
-                }
-                _ => {
-                    info!("marking {} as mined in block {}", owned.txoutpoint, blkhash);
-                    owned.spend_status = OutputSpendStatus::Mined(blkhash.to_string());
-                }
-            }
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("owned outpoint not found"))
-        }
-    }
-
-    pub fn list_outpoints(&self) -> Vec<OwnedOutput> {
-        self.owned.values().cloned().collect()
-    }
-
-    pub fn reset_from_blockheight(self, blockheight: u32) -> Self {
-        let mut new = self.clone();
-        new.owned = HashMap::new();
-        new.owned = self
-            .owned
-            .into_iter()
-            .filter(|o| o.1.blockheight <= blockheight)
-            .collect();
-        new.last_scan = blockheight;
-
-        new
-    }
-
-    pub fn save_to_disk(&self) -> Result<()> {
-        self.writer.write_to_file(self)
-    }
-
-    pub fn retrieve_from_disk(self) -> Result<Self> {
-        self.writer.read_from_file()
-    }
-
-    pub fn delete_from_disk(self) -> Result<()> {
-        self.writer.delete()
     }
 
     pub fn get_receiving_address(&self) -> String {
@@ -281,6 +191,7 @@ impl SpClient {
             SpendKey::Public(_) => return Err(Error::msg("Watch-only wallet, can't spend")),
         };
 
+        // TODO: create a struct for `InputPrivKeys` or smth like that
         let mut input_privkeys: Vec<(SecretKey, bool)> = vec![];
         for (i, input) in psbt.inputs.iter().enumerate() {
             if let Some(tweak) = input.proprietary.get(&raw::ProprietaryKey {
@@ -288,16 +199,14 @@ impl SpClient {
                 subtype: PSBT_SP_SUBTYPE,
                 key: PSBT_SP_TWEAK_KEY.as_bytes().to_vec(),
             }) {
-                let mut buffer = [0u8; 32];
-                if tweak.len() != 32 {
-                    return Err(Error::msg(format!("Invalid tweak at input {}", i)));
-                }
-                buffer.copy_from_slice(tweak.as_slice());
-                let scalar = Scalar::from_be_bytes(buffer)?;
-                // because we are sp-only, all input keys are taproot
-                input_privkeys.push((b_spend.add_tweak(&scalar)?, true));
+                let sk = SecretKey::from_slice(&tweak)?;
+                let input_key = b_spend.add_tweak(&sk.into())?;
+                // we add `false` for every key since we only handle silent payments outputs as input
+                input_privkeys.push((input_key, false));
+                // TODO: add the derivation logic to be able to use non sp output as inputs
+                // TODO: add a psbt field to hold the tweak when some outputs are not ours
             } else {
-                // For now all inputs belong to us
+                // For now we own all inputs and they're all silent payments outputs
                 return Err(Error::msg(format!("Missing tweak at input {}", i)));
             }
         }
@@ -334,6 +243,7 @@ impl SpClient {
 
         let mut sp_address2xonlypubkeys =
             silentpayments::sending::generate_recipient_pubkeys(sp_addresses, partial_secret)?;
+        // We iterate twice over outputs, it would make sense to have some kind of stateful struct to keep tracks of key generated and do everything in one go
         for (i, output) in psbt.unsigned_tx.output.iter_mut().enumerate() {
             // get the sp address from psbt
             let output_data = &psbt.outputs[i];
@@ -370,13 +280,17 @@ impl SpClient {
         Ok(())
     }
 
-    pub fn set_fees(psbt: &mut Psbt, fee_rate: u32, payer: String) -> Result<()> {
-        let payer_vouts: Vec<u32> = match SilentPaymentAddress::try_from(payer.clone()) {
+    pub fn set_fees(psbt: &mut Psbt, fee_rate: Amount, payer: String) -> Result<()> {
+        // just take the first output that belong to payer
+        // it would be interesting to randomize the outputs we pick,
+        // or scatter the fee amount on all the outputs of the payer
+        // or maybe divide the fee amongst all the participants of the transaction
+        let payer_vout = match SilentPaymentAddress::try_from(payer.clone()) {
             Ok(sp_address) => psbt
                 .outputs
                 .iter()
                 .enumerate()
-                .filter_map(|(i, o)| {
+                .find(|(_, o)| {
                     if let Some(value) = o.proprietary.get(&raw::ProprietaryKey {
                         prefix: PSBT_SP_PREFIX.as_bytes().to_vec(),
                         subtype: PSBT_SP_SUBTYPE,
@@ -385,16 +299,12 @@ impl SpClient {
                         let candidate =
                             SilentPaymentAddress::try_from(deserialize::<String>(value).unwrap())
                                 .unwrap();
-                        if sp_address == candidate {
-                            Some(i as u32)
-                        } else {
-                            None
-                        }
+                        sp_address == candidate
                     } else {
-                        None
+                        false
                     }
                 })
-                .collect(),
+                .map(|(i, _)| i),
             Err(_) => {
                 let address = Address::from_str(&payer)?;
                 let spk = address.assume_checked().script_pubkey();
@@ -402,34 +312,27 @@ impl SpClient {
                     .output
                     .iter()
                     .enumerate()
-                    .filter_map(|(i, o)| {
-                        if o.script_pubkey == spk {
-                            Some(i as u32)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect() // Actually we should have only one output for normal address
+                    .find(|(_, o)| o.script_pubkey == spk)
+                    .map(|(i, _)| i)
             }
         };
 
-        if payer_vouts.is_empty() {
+        if payer_vout.is_none() {
             return Err(Error::msg("Payer is not part of this transaction"));
         }
 
         // check against the total amt in inputs
-        let total_input_amt: u64 = psbt
+        let total_input_amt: Amount = psbt
             .iter_funding_utxos()
-            .try_fold(0u64, |sum, utxo_result| {
-                utxo_result.map(|utxo| sum + utxo.value.to_sat())
+            .try_fold(Amount::from_sat(0), |sum, utxo_result| {
+                utxo_result.map(|utxo| sum + utxo.value)
             })?;
 
-        // total amt in outputs should be equal
-        let total_output_amt: u64 = psbt
+        let total_output_amt: Amount = psbt
             .unsigned_tx
             .output
             .iter()
-            .fold(0, |sum, add| sum + add.value.to_sat());
+            .fold(Amount::from_sat(0), |sum, add| sum + add.value);
 
         let dust = total_input_amt - total_output_amt;
 
@@ -439,22 +342,19 @@ impl SpClient {
 
         // now compute the size of the tx
         let fake = Self::sign_psbt_fake(psbt);
-        let vsize = fake.vsize();
+        let vsize = fake.weight().to_vbytes_ceil();
 
         // absolut amount of fees
-        let fee_amt: u64 = (fee_rate * vsize as u32).into();
+        let fee_amt = fee_rate
+            .checked_mul(vsize)
+            .ok_or_else(|| Error::msg("Fee rate multiplication overflowed"))?;
 
         // now deduce the fees from one of the payer outputs
         // TODO deduce fee from the change address
         if fee_amt > dust {
-            let mut rng = bip39::rand::thread_rng();
-            if let Some(deduce_from) = payer_vouts.choose(&mut rng) {
-                let output = &mut psbt.unsigned_tx.output[*deduce_from as usize];
-                let old_value = output.value;
-                output.value = old_value - Amount::from_sat(fee_amt - dust); // account for eventual dust
-            } else {
-                return Err(Error::msg("no payer vout"));
-            }
+            let output = &mut psbt.unsigned_tx.output[payer_vout.unwrap()];
+            let old_value = output.value;
+            output.value = old_value - (fee_amt - dust); // account for eventual dust
         }
 
         Ok(())
@@ -462,27 +362,27 @@ impl SpClient {
 
     pub fn create_new_psbt(
         &self,
-        inputs: Vec<OwnedOutput>,
+        utxos: HashMap<OutPoint, OwnedOutput>,
         mut recipients: Vec<Recipient>,
     ) -> Result<Psbt> {
         let mut tx_in: Vec<bitcoin::TxIn> = vec![];
-        let mut inputs_data: Vec<(ScriptBuf, u64, Scalar)> = vec![];
-        let mut total_input_amount = 0u64;
-        let mut total_output_amount = 0u64;
+        let mut inputs_data: Vec<(ScriptBuf, Amount, Scalar)> = vec![];
+        let mut total_input_amount = Amount::from_sat(0);
+        let mut total_output_amount = Amount::from_sat(0);
 
-        for i in inputs {
+        for (outpoint, utxo) in utxos {
             tx_in.push(TxIn {
-                previous_output: bitcoin::OutPoint::from_str(&i.txoutpoint)?,
+                previous_output: outpoint,
                 script_sig: ScriptBuf::new(),
                 sequence: bitcoin::Sequence::MAX,
                 witness: bitcoin::Witness::new(),
             });
 
-            let scalar = Scalar::from_be_bytes(FromHex::from_hex(&i.tweak)?)?;
+            let scalar: Scalar = SecretKey::from_str(&utxo.tweak)?.into();
 
-            total_input_amount += i.amount;
+            total_input_amount += utxo.amount;
 
-            inputs_data.push((ScriptBuf::from_hex(&i.script)?, i.amount, scalar));
+            inputs_data.push((ScriptBuf::from_hex(&utxo.script)?, utxo.amount, scalar));
         }
 
         // We could compute the outputs key right away,
@@ -493,7 +393,7 @@ impl SpClient {
             bitcoin::XOnlyPublicKey::from_str(NUMS)?.dangerous_assume_tweaked(),
         );
 
-        let _outputs: Result<Vec<bitcoin::TxOut>> = recipients
+        let _outputs: Result<Vec<TxOut>> = recipients
             .iter()
             .map(|o| {
                 let script_pubkey: ScriptBuf;
@@ -536,7 +436,7 @@ impl SpClient {
                 total_output_amount += o.amount;
 
                 Ok(TxOut {
-                    value: Amount::from_sat(o.amount),
+                    value: o.amount,
                     script_pubkey,
                 })
             })
@@ -551,7 +451,7 @@ impl SpClient {
             let change_address = self.sp_receiver.get_change_address();
 
             outputs.push(TxOut {
-                value: Amount::from_sat(change_amt),
+                value: change_amt,
                 script_pubkey: placeholder_spk,
             });
 
@@ -575,7 +475,7 @@ impl SpClient {
         for (i, input_data) in inputs_data.iter().enumerate() {
             let (script_pubkey, value, tweak) = input_data;
             let witness_txout = TxOut {
-                value: Amount::from_sat(*value),
+                value: *value,
                 script_pubkey: script_pubkey.clone(),
             };
             let mut psbt_input = Input {
@@ -661,7 +561,7 @@ impl SpClient {
         fake_psbt.extract_tx().expect("Invalid fake tx")
     }
 
-    pub fn sign_psbt(&self, psbt: Psbt) -> Result<Psbt> {
+    pub fn sign_psbt(&self, psbt: Psbt, aux_rand: &[u8; 32]) -> Result<Psbt> {
         let b_spend = match self.spend_key {
             SpendKey::Secret(key) => key,
             SpendKey::Public(_) => return Err(Error::msg("Watch-only wallet, can't spend")),
@@ -704,7 +604,7 @@ impl SpClient {
 
             let keypair = Keypair::from_secret_key(&secp, &sk);
 
-            let sig = secp.sign_schnorr_with_rng(&msg, &keypair, &mut rand::thread_rng());
+            let sig = secp.sign_schnorr_with_aux_rand(&msg, &keypair, aux_rand);
 
             signed_psbt.inputs[i].tap_key_sig = Some(Signature {
                 sig,
@@ -738,29 +638,18 @@ impl SpClient {
     }
 }
 
-pub fn derive_keys_from_mnemonic(
-    seedphrase: &str,
-    passphrase: &str,
-    is_testnet: bool,
-) -> Result<(Mnemonic, SecretKey, SecretKey)> {
-    let mnemonic = if seedphrase.is_empty() {
-        Mnemonic::generate(12)?
-    } else {
-        Mnemonic::parse(seedphrase)?
-    };
-    let seed = mnemonic.to_seed(passphrase);
-
+pub fn derive_keys_from_seed(seed: &[u8; 64], is_testnet: bool) -> Result<(SecretKey, SecretKey)> {
     let network = if is_testnet {
         Network::Testnet
     } else {
         Network::Bitcoin
     };
 
-    let xprv = Xpriv::new_master(network, &seed)?;
+    let xprv = Xpriv::new_master(network, seed)?;
 
     let (scan_privkey, spend_privkey) = derive_keys_from_xprv(xprv)?;
 
-    Ok((mnemonic, scan_privkey, spend_privkey))
+    Ok((scan_privkey, spend_privkey))
 }
 
 fn derive_keys_from_xprv(xprv: Xpriv) -> Result<(SecretKey, SecretKey)> {

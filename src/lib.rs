@@ -1,9 +1,6 @@
-pub mod api;
-mod bridge_generated;
+#![allow(dead_code)]
 mod constants;
-mod db;
-mod electrumclient;
-mod logger;
-mod nakamotoclient;
-mod spclient;
-mod stream;
+pub mod spclient;
+
+pub use bitcoin;
+pub use silentpayments;
