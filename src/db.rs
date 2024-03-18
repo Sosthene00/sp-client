@@ -5,33 +5,41 @@ use std::{
     str::FromStr,
 };
 
-use anyhow::{Error, Result};
-use serde::{Deserialize, Serialize};
+use anyhow::Result;
+use serde::{de::DeserializeOwned, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-pub struct FileWriter {
-    path: PathBuf,
+pub trait Storage<T> {
+    fn save(&self, item: &T) -> Result<()>;
+    fn load(&self) -> Result<T>;
+    fn rm(self) -> Result<T>;
 }
 
-impl FileWriter {
-    pub fn new(path: String, filename: String) -> Result<Self> {
-        let loc = PathBuf::from_str(&path)?;
+#[derive(Debug, Serialize, PartialEq, Clone)]
+pub struct JsonFile {
+    full_path: PathBuf,
+}
+
+impl JsonFile {
+    pub fn new(dir: String, filename: String) -> Result<Self> {
+        let loc = PathBuf::from_str(&dir)?;
 
         let path = loc.join(filename);
 
-        Ok(Self { path })
+        Ok(Self { full_path: path })
     }
+}
 
-    pub fn write_to_file<T: Serialize>(&self, data: &T) -> Result<()> {
+impl<T: Serialize + DeserializeOwned> Storage<T> for JsonFile {
+    fn save(&self, data: &T) -> Result<()> {
         let json = serde_json::to_string(data)?;
-        let mut file = File::create(self.path.clone())?;
+        let mut file = File::create(self.full_path.clone())?;
         file.write_all(json.as_bytes())?;
 
         Ok(())
     }
 
-    pub fn read_from_file<T: for<'de> Deserialize<'de>>(&self) -> Result<T> {
-        let mut file = File::open(self.path.clone())?;
+    fn load(&self) -> Result<T> {
+        let mut file = File::open(self.full_path.clone())?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
         let data: T = serde_json::from_str(&contents)?;
@@ -39,7 +47,10 @@ impl FileWriter {
         Ok(data)
     }
 
-    pub fn delete(self) -> Result<()> {
-        remove_file(self.path).map_err(Error::new)
+    fn rm(self) -> Result<T> {
+        let item = self.load()?;
+        remove_file(self.full_path)?;
+
+        Ok(item)
     }
 }
