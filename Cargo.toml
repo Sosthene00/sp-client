@@ -8,12 +8,8 @@ name = "sp_client"
 crate-type = ["lib", "staticlib", "cdylib"]
 
 [dependencies]
-nakamoto = { git = "https://github.com/cygnet3/nakamoto", branch = "master" }
-silentpayments = "0.1"
+silentpayments = "0.1.1"
 anyhow = "1.0"
 serde = { version = "1.0.188", features = ["derive"] }
 serde_json = "1.0.107"
 bitcoin = { version = "0.31.1", features = ["serde", "rand", "base64"] }
-bip39 = { version = "2.0.0", features = ["rand"] }
-serde_with = "3.6.0"
-log = "0.4.20"

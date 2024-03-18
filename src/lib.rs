@@ -1,3 +1,6 @@
+#![allow(dead_code)]
 mod constants;
-mod db;
 pub mod spclient;
+
+pub use bitcoin;
+pub use silentpayments;
