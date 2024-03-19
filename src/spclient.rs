@@ -58,11 +58,13 @@ pub struct OwnedOutput {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct OutputList {
     wallet_fingerprint: WalletFingerprint,
+    birthday: u32,
+    last_scan: u32,
     outputs: HashMap<OutPoint, OwnedOutput>,
 }
 
 impl OutputList {
-    pub fn new(scan_pk: PublicKey, spend_pk: PublicKey) -> Self {
+    pub fn new(scan_pk: PublicKey, spend_pk: PublicKey, birthday: u32) -> Self {
         // take a fingerprint of the wallet by hashing its keys
         let mut engine = silentpayments::bitcoin_hashes::sha256::HashEngine::default();
         engine
@@ -78,7 +80,30 @@ impl OutputList {
         Self {
             wallet_fingerprint,
             outputs,
+            birthday,
+            last_scan: if birthday == 0 { 0 } else { birthday - 1 },
         }
+    }
+
+    pub fn set_birthday(&mut self, new_birthday: u32) {
+        self.birthday = new_birthday;
+    }
+
+    pub fn update_last_scan(&mut self, scan_height: u32) {
+        self.last_scan = scan_height;
+    }
+
+    pub fn reset_to_height(&mut self, height: u32) {
+        let new_outputs = self
+            .to_outpoints_list()
+            .into_iter()
+            .filter(|(_, o)| o.blockheight < height)
+            .collect::<HashMap<OutPoint, OwnedOutput>>();
+        self.outputs = new_outputs;
+    }
+
+    pub fn reset_to_birthday(&mut self) {
+        self.reset_to_height(self.birthday);
     }
 
     pub fn to_outpoints_list(&self) -> HashMap<OutPoint, OwnedOutput> {
@@ -124,8 +149,6 @@ pub struct SpClient {
     spend_key: SpendKey,
     mnemonic: Option<String>,
     pub sp_receiver: Receiver,
-    pub birthday: u32,
-    pub last_scan: u32,
 }
 
 impl SpClient {
@@ -134,7 +157,6 @@ impl SpClient {
         scan_sk: SecretKey,
         spend_key: SpendKey,
         mnemonic: Option<String>,
-        birthday: u32,
         is_testnet: bool,
     ) -> Result<Self> {
         let secp = Secp256k1::signing_only();
@@ -163,13 +185,7 @@ impl SpClient {
             spend_key,
             mnemonic,
             sp_receiver,
-            birthday,
-            last_scan: if birthday == 0 { 0 } else { birthday - 1 },
         })
-    }
-
-    pub fn update_last_scan(&mut self, scan_height: u32) {
-        self.last_scan = scan_height;
     }
 
     pub fn get_receiving_address(&self) -> String {
