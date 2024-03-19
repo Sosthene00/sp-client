@@ -9,10 +9,10 @@ use bitcoin::{
     consensus::{deserialize, serialize},
     key::TapTweak,
     psbt::PsbtSighashType,
+    script::PushBytesBuf,
     secp256k1::{Keypair, Message, PublicKey, Scalar, Secp256k1, SecretKey, ThirtyTwoByteHash},
     sighash::{Prevouts, SighashCache},
     taproot::Signature,
-    script::PushBytesBuf,
     Address, Amount, Network, OutPoint, ScriptBuf, TapLeafHash, Transaction, TxIn, TxOut, Witness,
 };
 use bitcoin::{
