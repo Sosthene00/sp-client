@@ -62,7 +62,7 @@ pub struct OwnedOutput {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct OutputList {
-    wallet_fingerprint: WalletFingerprint,
+    pub wallet_fingerprint: WalletFingerprint,
     birthday: u32,
     last_scan: u32,
     outputs: HashMap<OutPoint, OwnedOutput>,
@@ -88,6 +88,14 @@ impl OutputList {
             birthday,
             last_scan: if birthday == 0 { 0 } else { birthday - 1 },
         }
+    }
+
+    pub fn get_birthday(&self) -> u32 {
+        self.birthday
+    }
+
+    pub fn get_last_scan(&self) -> u32 {
+        self.last_scan
     }
 
     pub fn set_birthday(&mut self, new_birthday: u32) {
