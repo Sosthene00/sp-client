@@ -653,7 +653,7 @@ impl SpClient {
         Ok(signed_psbt)
     }
 
-    pub(crate) fn finalize_psbt(psbt: &mut Psbt) -> Result<()> {
+    pub fn finalize_psbt(psbt: &mut Psbt) -> Result<()> {
         psbt.inputs.iter_mut().for_each(|i| {
             let mut script_witness = Witness::new();
             if let Some(sig) = i.tap_key_sig {
