@@ -12,6 +12,7 @@ use bitcoin::{
     secp256k1::{Keypair, Message, PublicKey, Scalar, Secp256k1, SecretKey, ThirtyTwoByteHash},
     sighash::{Prevouts, SighashCache},
     taproot::Signature,
+    script::PushBytesBuf,
     Address, Amount, Network, OutPoint, ScriptBuf, TapLeafHash, Transaction, TxIn, TxOut, Witness,
 };
 use bitcoin::{
@@ -388,6 +389,7 @@ impl SpClient {
         &self,
         utxos: HashMap<OutPoint, OwnedOutput>,
         mut recipients: Vec<Recipient>,
+        payload: Option<&[u8]>
     ) -> Result<Psbt> {
         let mut tx_in: Vec<bitcoin::TxIn> = vec![];
         let mut inputs_data: Vec<(ScriptBuf, Amount, Scalar)> = vec![];
@@ -486,7 +488,19 @@ impl SpClient {
             });
         }
 
-        let tx = bitcoin::Transaction {
+        if let Some(data) = payload {
+            if data.len() > 40 {
+                return Err(Error::msg("Payload must be max 40B"));
+            }
+            let mut op_return = PushBytesBuf::new();
+            op_return.extend_from_slice(data)?;
+            outputs.push(TxOut {
+                value: Amount::from_sat(0),
+                script_pubkey: ScriptBuf::new_op_return(op_return),
+            });
+        }
+
+        let tx = Transaction {
             version: bitcoin::transaction::Version(2),
             lock_time: bitcoin::absolute::LockTime::ZERO,
             input: tx_in,
