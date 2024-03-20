@@ -1,7 +1,7 @@
 use std::{
     fs::{remove_file, File},
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     str::FromStr,
 };
 
@@ -20,10 +20,10 @@ pub struct JsonFile {
 }
 
 impl JsonFile {
-    pub fn new(dir: String, filename: String) -> Result<Self> {
-        let loc = PathBuf::from_str(&dir)?;
-
-        let path = loc.join(filename);
+    pub fn new<P: AsRef<Path>>(dir: &P, filename: &P) -> Result<Self> {
+        let mut path = PathBuf::new();
+        path.push(dir);
+        path.push(filename);
 
         Ok(Self { full_path: path })
     }
