@@ -268,6 +268,10 @@ impl SpClient {
         self.scan_sk
     }
 
+    pub fn get_spend_key(&self) -> SpendKey {
+        self.spend_key.clone()
+    }
+
     pub fn fill_sp_outputs(&self, psbt: &mut Psbt) -> Result<()> {
         let b_spend = match self.spend_key {
             SpendKey::Secret(key) => key,
