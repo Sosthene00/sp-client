@@ -5,15 +5,7 @@ use std::{
 };
 
 use bitcoin::{
-    bip32::{DerivationPath, Xpriv},
-    consensus::{deserialize, serialize},
-    key::TapTweak,
-    psbt::PsbtSighashType,
-    script::PushBytesBuf,
-    secp256k1::{Keypair, Message, PublicKey, Scalar, Secp256k1, SecretKey, ThirtyTwoByteHash},
-    sighash::{Prevouts, SighashCache},
-    taproot::Signature,
-    Address, Amount, Network, OutPoint, ScriptBuf, TapLeafHash, Transaction, TxIn, TxOut, Witness,
+    bip32::{DerivationPath, Xpriv}, consensus::{deserialize, serialize}, hex::DisplayHex, key::TapTweak, psbt::PsbtSighashType, script::PushBytesBuf, secp256k1::{Keypair, Message, PublicKey, Scalar, Secp256k1, SecretKey, ThirtyTwoByteHash}, sighash::{Prevouts, SighashCache}, taproot::Signature, Address, Amount, BlockHash, Network, OutPoint, ScriptBuf, TapLeafHash, Transaction, TxIn, TxOut, Txid, Witness
 };
 use bitcoin::{
     hashes::Hash,
@@ -140,6 +132,77 @@ impl OutputList {
             .into_iter()
             .filter(|(_, o)| o.spend_status == OutputSpendStatus::Unspent)
             .collect()
+    }
+
+    pub fn get_outpoint(&self, outpoint: OutPoint) -> Result<(OutPoint, OwnedOutput)> {
+        let output = self
+            .to_outpoints_list()
+            .get_key_value(&outpoint)
+            .ok_or_else(|| Error::msg("Outpoint not in list"))?
+            .1
+            .to_owned();
+
+        Ok((outpoint, output))
+    }
+
+    pub fn mark_spent(
+        &mut self,
+        outpoint: OutPoint,
+        spending_tx: Txid,
+        force_update: bool,
+    ) -> Result<()> {
+        let (outpoint, mut output) = self.get_outpoint(outpoint)?;
+
+        match output.spend_status {
+            OutputSpendStatus::Unspent => {
+                let tx_hex = spending_tx.to_string();
+                output.spend_status = OutputSpendStatus::Spent(tx_hex);
+                self.outputs.insert(outpoint, output);
+                Ok(())
+            }
+            OutputSpendStatus::Spent(tx_hex) => {
+                // We may want to fail if that's the case, or force update if we know what we're doing
+                if force_update {
+                    let tx_hex = spending_tx.to_string();
+                    output.spend_status = OutputSpendStatus::Spent(tx_hex);
+                    self.outputs.insert(outpoint, output);
+                    Ok(())
+                } else {
+                    Err(Error::msg(format!(
+                        "Output already spent by transaction {}",
+                        tx_hex
+                    )))
+                }
+            }
+            OutputSpendStatus::Mined(block) => Err(Error::msg(format!(
+                "Output already mined in block {}",
+                block
+            ))),
+        }
+    }
+
+    /// Mark the output as being spent in block `mined_in_block`
+    /// We don't really need to check the previous status, if it's in a block there's nothing we can do
+    pub fn mark_mined(&mut self, outpoint: OutPoint, mined_in_block: BlockHash) -> Result<()> {
+        let (outpoint, mut output) = self.get_outpoint(outpoint)?;
+
+        let block_hex = mined_in_block.to_string();
+        output.spend_status = OutputSpendStatus::Mined(block_hex);
+        self.outputs.insert(outpoint, output);
+        Ok(())
+    }
+
+    /// Revert the outpoint status to Unspent, regardless of the current status
+    /// This could be useful on some rare occurrences, like a transaction falling out of mempool after a while
+    /// Watch out we also reverse the mined state, use with caution
+    pub fn revert_spent_status(&mut self, outpoint: OutPoint) -> Result<()> {
+        let (outpoint, mut output) = self.get_outpoint(outpoint)?;
+
+        if output.spend_status != OutputSpendStatus::Unspent {
+            output.spend_status = OutputSpendStatus::Unspent;
+            self.outputs.insert(outpoint, output);
+        }
+        Ok(())
     }
 }
 
@@ -389,7 +452,7 @@ impl SpClient {
         &self,
         utxos: HashMap<OutPoint, OwnedOutput>,
         mut recipients: Vec<Recipient>,
-        payload: Option<&[u8]>
+        payload: Option<&[u8]>,
     ) -> Result<Psbt> {
         let mut tx_in: Vec<bitcoin::TxIn> = vec![];
         let mut inputs_data: Vec<(ScriptBuf, Amount, Scalar)> = vec![];
