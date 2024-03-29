@@ -5,7 +5,7 @@ use std::{
 };
 
 use bitcoin::{
-    bip32::{DerivationPath, Xpriv}, consensus::{deserialize, serialize}, hex::DisplayHex, key::TapTweak, psbt::PsbtSighashType, script::PushBytesBuf, secp256k1::{Keypair, Message, PublicKey, Scalar, Secp256k1, SecretKey, ThirtyTwoByteHash}, sighash::{Prevouts, SighashCache}, taproot::Signature, Address, Amount, BlockHash, Network, OutPoint, ScriptBuf, TapLeafHash, Transaction, TxIn, TxOut, Txid, Witness
+    bip32::{DerivationPath, Xpriv}, consensus::{deserialize, serialize}, key::TapTweak, psbt::PsbtSighashType, script::PushBytesBuf, secp256k1::{Keypair, Message, PublicKey, Scalar, Secp256k1, SecretKey, ThirtyTwoByteHash}, sighash::{Prevouts, SighashCache}, taproot::Signature, Address, Amount, BlockHash, Network, OutPoint, ScriptBuf, TapLeafHash, Transaction, TxIn, TxOut, Txid, Witness
 };
 use bitcoin::{
     hashes::Hash,
@@ -270,6 +270,13 @@ impl SpClient {
 
     pub fn get_spend_key(&self) -> SpendKey {
         self.spend_key.clone()
+    }
+
+    pub fn try_get_secret_spend_key(&self) -> Result<SecretKey> {
+        match self.spend_key {
+            SpendKey::Public(_) => Err(Error::msg("Don't have secret key")),
+            SpendKey::Secret(sk) => Ok(sk)
+        }
     }
 
     pub fn fill_sp_outputs(&self, psbt: &mut Psbt) -> Result<()> {

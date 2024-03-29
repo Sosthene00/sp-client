@@ -2,7 +2,6 @@ use std::{
     fs::{remove_file, File},
     io::{Read, Write},
     path::{Path, PathBuf},
-    str::FromStr,
 };
 
 use anyhow::Result;
