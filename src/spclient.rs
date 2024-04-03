@@ -300,6 +300,10 @@ impl SpClient {
         self.spend_key.clone()
     }
 
+    pub fn get_mnemonic(&self) -> Option<String> {
+        self.mnemonic.clone()
+    }
+
     pub fn try_get_secret_spend_key(&self) -> Result<SecretKey> {
         match self.spend_key {
             SpendKey::Public(_) => Err(Error::msg("Don't have secret key")),
