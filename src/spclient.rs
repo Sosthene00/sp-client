@@ -78,6 +78,12 @@ impl OutputList {
         }
     }
 
+    pub fn check_fingerprint(&self, client: &SpClient) -> bool {
+        let sp_address: SilentPaymentAddress = client.get_receiving_address().try_into().unwrap();
+        let new = Self::new(sp_address.get_scan_key(), sp_address.get_spend_key(), 0);
+        new.wallet_fingerprint == self.wallet_fingerprint
+    }
+
     pub fn get_birthday(&self) -> u32 {
         self.birthday
     }
@@ -764,6 +770,22 @@ impl SpClient {
             i.bip32_derivation = BTreeMap::new();
         });
         Ok(())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SpWallet {
+    client: SpClient,
+    outputs: OutputList,
+}
+
+impl SpWallet {
+    pub fn new(client: SpClient, outputs: OutputList) -> Result<Self> {
+        if outputs.check_fingerprint(&client) {
+            Ok(Self { client, outputs })
+        } else {
+            Err(Error::msg("outputs don't match client"))
+        }
     }
 }
 
