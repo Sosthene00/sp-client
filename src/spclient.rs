@@ -787,6 +787,14 @@ impl SpWallet {
             Err(Error::msg("outputs don't match client"))
         }
     }
+
+    pub fn get_mut_client(&mut self) -> &mut SpClient {
+        &mut self.client
+    }
+
+    pub fn get_mut_outputs(&mut self) -> &mut OutputList {
+        &mut self.outputs
+    }
 }
 
 pub fn derive_keys_from_seed(seed: &[u8; 64], is_testnet: bool) -> Result<(SecretKey, SecretKey)> {
