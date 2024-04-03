@@ -19,12 +19,12 @@ pub struct JsonFile {
 }
 
 impl JsonFile {
-    pub fn new<P: AsRef<Path>>(dir: &P, filename: &P) -> Result<Self> {
+    pub fn new<P: AsRef<Path>>(dir: &P, filename: &P) -> Self {
         let mut path = PathBuf::new();
         path.push(dir);
         path.push(filename);
 
-        Ok(Self { full_path: path })
+        Self { full_path: path }
     }
 }
 
