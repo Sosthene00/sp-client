@@ -214,6 +214,28 @@ pub enum SpendKey {
     Public(PublicKey),
 }
 
+impl TryInto<SecretKey> for SpendKey {
+    type Error = anyhow::Error;
+    fn try_into(self) -> std::prelude::v1::Result<SecretKey, Error> {
+        match self {
+            Self::Secret(k) => Ok(k),
+            Self::Public(_) => Err(Error::msg("Can't take SecretKey from Public"))
+        }
+    }
+}
+
+impl Into<PublicKey> for SpendKey {
+    fn into(self) -> PublicKey {
+        match self {
+            Self::Secret(k) => {
+                let secp = Secp256k1::signing_only();
+                k.public_key(&secp)
+            },
+            Self::Public(p) => p
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct SpClient {
     pub label: String,
