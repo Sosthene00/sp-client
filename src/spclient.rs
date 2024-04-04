@@ -5,7 +5,17 @@ use std::{
 };
 
 use bitcoin::{
-    bip32::{DerivationPath, Xpriv}, consensus::{deserialize, serialize}, key::TapTweak, psbt::PsbtSighashType, script::PushBytesBuf, secp256k1::{Keypair, Message, PublicKey, Scalar, Secp256k1, SecretKey, ThirtyTwoByteHash}, sighash::{Prevouts, SighashCache}, taproot::Signature, Address, Amount, BlockHash, Network, OutPoint, ScriptBuf, TapLeafHash, Transaction, TxIn, TxOut, Txid, Witness
+    bip32::{DerivationPath, Xpriv},
+    consensus::{deserialize, serialize},
+    hex::DisplayHex,
+    key::TapTweak,
+    psbt::PsbtSighashType,
+    script::PushBytesBuf,
+    secp256k1::{Keypair, Message, PublicKey, Scalar, Secp256k1, SecretKey, ThirtyTwoByteHash},
+    sighash::{Prevouts, SighashCache},
+    taproot::Signature,
+    Address, Amount, BlockHash, Network, OutPoint, ScriptBuf, TapLeafHash, Transaction, TxIn,
+    TxOut, Txid, Witness, XOnlyPublicKey,
 };
 use bitcoin::{
     hashes::Hash,
@@ -225,7 +235,7 @@ impl TryInto<SecretKey> for SpendKey {
     fn try_into(self) -> std::prelude::v1::Result<SecretKey, Error> {
         match self {
             Self::Secret(k) => Ok(k),
-            Self::Public(_) => Err(Error::msg("Can't take SecretKey from Public"))
+            Self::Public(_) => Err(Error::msg("Can't take SecretKey from Public")),
         }
     }
 }
@@ -236,8 +246,8 @@ impl Into<PublicKey> for SpendKey {
             Self::Secret(k) => {
                 let secp = Secp256k1::signing_only();
                 k.public_key(&secp)
-            },
-            Self::Public(p) => p
+            }
+            Self::Public(p) => p,
         }
     }
 }
@@ -307,7 +317,7 @@ impl SpClient {
     pub fn try_get_secret_spend_key(&self) -> Result<SecretKey> {
         match self.spend_key {
             SpendKey::Public(_) => Err(Error::msg("Don't have secret key")),
-            SpendKey::Secret(sk) => Ok(sk)
+            SpendKey::Secret(sk) => Ok(sk),
         }
     }
 
@@ -798,6 +808,56 @@ impl SpWallet {
 
     pub fn get_mut_outputs(&mut self) -> &mut OutputList {
         &mut self.outputs
+    }
+
+    pub fn update_wallet_with_transaction(
+        &mut self,
+        tx: Transaction,
+        blockheight: u32,
+        partial_tweak: PublicKey,
+    ) -> Result<()> {
+        let shared_secret = sp_utils::receiving::calculate_shared_secret(
+            partial_tweak,
+            self.client.get_scan_key(),
+        )?;
+        let mut pubkeys_to_check: HashMap<XOnlyPublicKey, u32> = HashMap::new();
+        for (vout, output) in (0u32..).zip(tx.output.iter()) {
+            if output.script_pubkey.is_p2tr() {
+                let xonly = XOnlyPublicKey::from_slice(&output.script_pubkey.as_bytes()[2..])?;
+                pubkeys_to_check.insert(xonly, vout);
+            }
+        }
+        let ours = self
+            .client
+            .sp_receiver
+            .scan_transaction(&shared_secret, pubkeys_to_check.keys().cloned().collect())?;
+        let mut res: HashMap<OutPoint, OwnedOutput> = HashMap::new();
+        for (label, map) in ours {
+            for (key, scalar) in map {
+                let vout = pubkeys_to_check.get(&key).unwrap().to_owned();
+                let txout = tx.output.get(vout as usize).unwrap();
+
+                let label_str: Option<String>;
+                if let Some(ref l) = label {
+                    label_str = Some(l.as_string());
+                } else {
+                    label_str = None;
+                }
+
+                let outpoint = OutPoint::new(tx.txid(), vout);
+                let owned = OwnedOutput {
+                    blockheight,
+                    tweak: scalar.to_be_bytes().to_lower_hex_string(),
+                    amount: txout.value,
+                    script: txout.script_pubkey.as_bytes().to_lower_hex_string(),
+                    label: label_str,
+                    spend_status: OutputSpendStatus::Unspent,
+                };
+                res.insert(outpoint, owned);
+            }
+        }
+        self.outputs.extend_from(res);
+        Ok(())
     }
 }
 
