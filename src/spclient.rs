@@ -815,6 +815,14 @@ impl SpWallet {
         }
     }
 
+    pub fn get_client(&self) -> &SpClient {
+        &self.client
+    }
+
+    pub fn get_outputs(&self) -> &OutputList {
+        &self.outputs
+    }
+
     pub fn get_mut_client(&mut self) -> &mut SpClient {
         &mut self.client
     }
