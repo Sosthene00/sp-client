@@ -794,11 +794,24 @@ pub struct SpWallet {
 }
 
 impl SpWallet {
-    pub fn new(client: SpClient, outputs: OutputList) -> Result<Self> {
-        if outputs.check_fingerprint(&client) {
-            Ok(Self { client, outputs })
+    pub fn new(client: SpClient, outputs: Option<OutputList>) -> Result<Self> {
+        if let Some(existing_outputs) = outputs {
+            if existing_outputs.check_fingerprint(&client) {
+                Ok(Self {
+                    client,
+                    outputs: existing_outputs,
+                })
+            } else {
+                Err(Error::msg("outputs don't match client"))
+            }
         } else {
-            Err(Error::msg("outputs don't match client"))
+            // Create a new outputs list
+            let outputs = OutputList::new(
+                client.get_scan_key().public_key(&Secp256k1::signing_only()),
+                client.get_spend_key().into(),
+                0,
+            );
+            Ok(Self { client, outputs })
         }
     }
 
