@@ -787,7 +787,7 @@ impl SpClient {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpWallet {
     client: SpClient,
     outputs: OutputList,
