@@ -321,7 +321,7 @@ impl SpClient {
         }
     }
 
-    pub fn fill_sp_outputs(&self, psbt: &mut Psbt) -> Result<()> {
+    pub fn get_partial_secret_from_psbt(&self, psbt: &Psbt) -> Result<SecretKey> {
         let b_spend = match self.spend_key {
             SpendKey::Secret(key) => key,
             SpendKey::Public(_) => return Err(Error::msg("Watch-only wallet, can't spend")),
@@ -359,7 +359,11 @@ impl SpClient {
 
         let partial_secret =
             sp_utils::sending::calculate_partial_secret(&input_privkeys, &outpoints)?;
+        
+        Ok(partial_secret)
+    }
 
+    pub fn fill_sp_outputs(&self, psbt: &mut Psbt, partial_secret: SecretKey) -> Result<()> {
         // get all the silent addresses
         let mut sp_addresses: Vec<String> = Vec::with_capacity(psbt.outputs.len());
         for output in psbt.outputs.iter() {
