@@ -833,10 +833,10 @@ impl SpWallet {
 
     pub fn update_wallet_with_transaction(
         &mut self,
-        tx: Transaction,
+        tx: &Transaction,
         blockheight: u32,
         partial_tweak: PublicKey,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let shared_secret = sp_utils::receiving::calculate_shared_secret(
             partial_tweak,
             self.client.get_scan_key(),
@@ -852,7 +852,7 @@ impl SpWallet {
             .client
             .sp_receiver
             .scan_transaction(&shared_secret, pubkeys_to_check.keys().cloned().collect())?;
-        let mut res: HashMap<OutPoint, OwnedOutput> = HashMap::new();
+        let mut new_outputs: HashMap<OutPoint, OwnedOutput> = HashMap::new();
         for (label, map) in ours {
             for (key, scalar) in map {
                 let vout = pubkeys_to_check.get(&key).unwrap().to_owned();
@@ -874,11 +874,12 @@ impl SpWallet {
                     label: label_str,
                     spend_status: OutputSpendStatus::Unspent,
                 };
-                res.insert(outpoint, owned);
+                new_outputs.insert(outpoint, owned);
             }
         }
-        self.outputs.extend_from(res);
-        Ok(())
+        let res = new_outputs.len();
+        self.outputs.extend_from(new_outputs);
+        Ok(res)
     }
 }
 
