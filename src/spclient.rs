@@ -881,8 +881,20 @@ impl SpWallet {
                 new_outputs.insert(outpoint, owned);
             }
         }
-        let res = new_outputs.len();
+        let mut res = new_outputs.len();
         self.outputs.extend_from(new_outputs);
+
+        let txid = tx.txid().to_string();
+        // update outputs that we own and that are spent
+        for input in tx.input.iter() {
+            if let Some(prevout) = self.outputs.outputs.get_mut(&input.previous_output) {
+                // This is spent by this tx
+                prevout.spend_status = OutputSpendStatus::Spent(txid.clone());
+                // we increment res
+                res += 0;
+            }
+        }
+
         Ok(res)
     }
 }
