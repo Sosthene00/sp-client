@@ -363,6 +363,17 @@ impl SpClient {
         Ok(partial_secret)
     }
 
+    pub fn replace_op_return_with(psbt: &mut Psbt, new_data: &[u8]) -> Result<()> {
+        psbt.unsigned_tx.output.iter_mut()
+            .filter(|o| o.script_pubkey.is_op_return())
+            .for_each(|o| {
+                let mut op_return = PushBytesBuf::new();
+                op_return.extend_from_slice(new_data).unwrap();
+                o.script_pubkey = ScriptBuf::new_op_return(op_return);
+            });
+        Ok(())
+    }
+
     pub fn fill_sp_outputs(&self, psbt: &mut Psbt, partial_secret: SecretKey) -> Result<()> {
         // get all the silent addresses
         let mut sp_addresses: Vec<String> = Vec::with_capacity(psbt.outputs.len());
