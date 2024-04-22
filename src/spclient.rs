@@ -30,9 +30,8 @@ use silentpayments::utils as sp_utils;
 use anyhow::{Error, Result};
 
 use crate::constants::{
-    DUST_THRESHOLD, NUMS, PSBT_SP_ADDRESS_KEY, PSBT_SP_PREFIX, PSBT_SP_SUBTYPE, PSBT_SP_TWEAK_KEY,
+    DATA_CARRIER_SIZE, DUST_THRESHOLD, NUMS, PSBT_SP_ADDRESS_KEY, PSBT_SP_PREFIX, PSBT_SP_SUBTYPE, PSBT_SP_TWEAK_KEY
 };
-use crate::db::FileWriter;
 
 pub use bitcoin::psbt::Psbt;
 
@@ -485,7 +484,7 @@ impl SpClient {
             .iter()
             .fold(Amount::from_sat(0), |sum, add| sum + add.value);
 
-        let dust = total_input_amt - total_output_amt;
+        let dust = total_input_amt.checked_sub(total_output_amt).ok_or(Error::msg("Not enough funds"))?;
 
         if dust > DUST_THRESHOLD {
             return Err(Error::msg("Missing a change output"));
@@ -505,7 +504,7 @@ impl SpClient {
         if fee_amt > dust {
             let output = &mut psbt.unsigned_tx.output[payer_vout.unwrap()];
             let old_value = output.value;
-            output.value = old_value - (fee_amt - dust); // account for eventual dust
+            output.value = old_value.checked_sub(fee_amt - dust).ok_or(Error::msg("Not enough funds"))?; // account for eventual dust
         }
 
         Ok(())
@@ -532,7 +531,7 @@ impl SpClient {
 
             let scalar: Scalar = SecretKey::from_str(&utxo.tweak)?.into();
 
-            total_input_amount += utxo.amount;
+            total_input_amount = total_input_amount.checked_add(utxo.amount).ok_or(Error::msg("Overflow on input amount"))?;
 
             inputs_data.push((ScriptBuf::from_hex(&utxo.script)?, utxo.amount, scalar));
         }
@@ -585,7 +584,7 @@ impl SpClient {
                     }
                 }
 
-                total_output_amount += o.amount;
+                total_output_amount = total_output_amount.checked_add(o.amount).ok_or(Error::msg("Overflow on output amount"))?;
 
                 Ok(TxOut {
                     value: o.amount,
@@ -596,7 +595,7 @@ impl SpClient {
 
         let mut outputs = _outputs?;
 
-        let change_amt = total_input_amount - total_output_amount;
+        let change_amt = total_input_amount.checked_sub(total_output_amount).ok_or(Error::msg("Not enough funds in inputs"))?;
 
         if change_amt > DUST_THRESHOLD {
             // Add change output
@@ -615,8 +614,8 @@ impl SpClient {
         }
 
         if let Some(data) = payload {
-            if data.len() > 40 {
-                return Err(Error::msg("Payload must be max 40B"));
+            if data.len() > DATA_CARRIER_SIZE {
+                return Err(Error::msg(format!("Payload must be max {}B", DATA_CARRIER_SIZE)));
             }
             let mut op_return = PushBytesBuf::new();
             op_return.extend_from_slice(data)?;
