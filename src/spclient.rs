@@ -336,8 +336,8 @@ impl SpClient {
             }) {
                 let sk = SecretKey::from_slice(&tweak)?;
                 let input_key = b_spend.add_tweak(&sk.into())?;
-                // we add `false` for every key since we only handle silent payments outputs as input
-                input_privkeys.push((input_key, false));
+                // we add `true` for every key since we only handle silent payments outputs as input
+                input_privkeys.push((input_key, true));
                 // TODO: add the derivation logic to be able to use non sp output as inputs
                 // TODO: add a psbt field to hold the tweak when some outputs are not ours
             } else {
