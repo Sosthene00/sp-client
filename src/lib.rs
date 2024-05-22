@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-mod constants;
+pub mod constants;
 pub mod db;
 pub mod spclient;
 
