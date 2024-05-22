@@ -850,7 +850,7 @@ impl SpWallet {
         tx: &Transaction,
         blockheight: u32,
         partial_tweak: PublicKey,
-    ) -> Result<usize> {
+    ) -> Result<HashMap<OutPoint, OwnedOutput>> {
         let shared_secret = sp_utils::receiving::calculate_shared_secret(
             partial_tweak,
             self.client.get_scan_key(),
@@ -891,7 +891,7 @@ impl SpWallet {
                 new_outputs.insert(outpoint, owned);
             }
         }
-        let mut res = new_outputs.len();
+        let mut res = new_outputs.clone();
         self.outputs.extend_from(new_outputs);
 
         let txid = tx.txid().to_string();
@@ -900,8 +900,7 @@ impl SpWallet {
             if let Some(prevout) = self.outputs.outputs.get_mut(&input.previous_output) {
                 // This is spent by this tx
                 prevout.spend_status = OutputSpendStatus::Spent(txid.clone());
-                // we increment res
-                res += 0;
+                res.insert(input.previous_output, prevout.clone());
             }
         }
 
