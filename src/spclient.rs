@@ -14,7 +14,7 @@ use bitcoin::{
     secp256k1::{Keypair, Message, PublicKey, Scalar, Secp256k1, SecretKey, ThirtyTwoByteHash},
     sighash::{Prevouts, SighashCache},
     taproot::Signature,
-    Address, Amount, BlockHash, Network, OutPoint, ScriptBuf, TapLeafHash, Transaction, TxIn,
+    Address, Amount, BlockHash, OutPoint, ScriptBuf, TapLeafHash, Transaction, TxIn,
     TxOut, Txid, Witness, XOnlyPublicKey,
 };
 use bitcoin::{
@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use silentpayments::receiving::{Label, Receiver};
 use silentpayments::sending::SilentPaymentAddress;
+use silentpayments::Network;
 use silentpayments::utils as sp_utils;
 
 use anyhow::{Error, Result};
@@ -272,9 +273,10 @@ impl SpClient {
         let scan_pubkey = scan_sk.public_key(&secp);
         let sp_receiver: Receiver;
         let change_label = Label::new(scan_sk, 0);
+        let network = if is_testnet { Network::Testnet } else { Network::Mainnet };
         match spend_key {
             SpendKey::Public(key) => {
-                sp_receiver = Receiver::new(0, scan_pubkey, key, change_label.into(), is_testnet)?;
+                sp_receiver = Receiver::new(0, scan_pubkey, key, change_label.into(), network)?;
             }
             SpendKey::Secret(key) => {
                 let spend_pubkey = key.public_key(&secp);
@@ -283,7 +285,7 @@ impl SpClient {
                     scan_pubkey,
                     spend_pubkey,
                     change_label.into(),
-                    is_testnet,
+                    network,
                 )?;
             }
         }
@@ -551,7 +553,7 @@ impl SpClient {
 
                 match SilentPaymentAddress::try_from(o.address.as_str()) {
                     Ok(sp_address) => {
-                        if self.sp_receiver.is_testnet != sp_address.is_testnet() {
+                        if self.sp_receiver.network != sp_address.get_network() {
                             return Err(Error::msg(format!(
                                 "Wrong network for address {}",
                                 sp_address
@@ -564,11 +566,11 @@ impl SpClient {
                         let unchecked_address = Address::from_str(&o.address)?; // TODO: handle better garbage string
 
                         let address_is_testnet = match *unchecked_address.network() {
-                            Network::Bitcoin => false,
+                            bitcoin::Network::Bitcoin => false,
                             _ => true,
                         };
 
-                        if self.sp_receiver.is_testnet != address_is_testnet {
+                        if self.sp_receiver.network == Network::Mainnet && address_is_testnet {
                             return Err(Error::msg(format!(
                                 "Wrong network for address {}",
                                 unchecked_address.assume_checked()
@@ -910,9 +912,9 @@ impl SpWallet {
 
 pub fn derive_keys_from_seed(seed: &[u8; 64], is_testnet: bool) -> Result<(SecretKey, SecretKey)> {
     let network = if is_testnet {
-        Network::Testnet
+        bitcoin::Network::Testnet
     } else {
-        Network::Bitcoin
+        bitcoin::Network::Bitcoin
     };
 
     let xprv = Xpriv::new_master(network, seed)?;
