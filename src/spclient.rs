@@ -853,10 +853,34 @@ impl SpWallet {
         blockheight: u32,
         partial_tweak: PublicKey,
     ) -> Result<HashMap<OutPoint, OwnedOutput>> {
-        let shared_secret = sp_utils::receiving::calculate_shared_secret(
-            partial_tweak,
-            self.client.get_scan_key(),
-        )?;
+        // First check that we haven't already scanned this transaction
+        let txid = tx.txid();
+
+        for i in 0..tx.output.len() {
+            if self.get_outputs().get_outpoint(OutPoint { txid, vout: i as u32 }).is_ok() {
+                return Err(Error::msg("Transaction already scanned"));
+            }
+        }
+
+        for input in tx.input.iter() {
+            if let Ok((_, output)) = self.get_outputs().get_outpoint(input.previous_output) {
+                match output.spend_status {
+                    OutputSpendStatus::Spent(tx) => {
+                        if tx == txid.to_string() {
+                            return Err(Error::msg("Transaction already scanned"));
+                        }
+                    },
+                    OutputSpendStatus::Mined(_) => return Err(Error::msg("Transaction already scanned")),
+                    _ => continue
+                }
+            }
+        }
+
+        let shared_point = sp_utils::receiving::calculate_shared_point(
+            &partial_tweak,
+            &self.client.get_scan_key(),
+        );
+        let shared_secret = PublicKey::from_slice(&shared_point)?;
         let mut pubkeys_to_check: HashMap<XOnlyPublicKey, u32> = HashMap::new();
         for (vout, output) in (0u32..).zip(tx.output.iter()) {
             if output.script_pubkey.is_p2tr() {
